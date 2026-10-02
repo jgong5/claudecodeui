@@ -290,6 +290,9 @@ async function dispatchRun(
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
+    // The send is answered once its turn ends; background work the turn left
+    // running reports through the run's writer afterwards.
+    settleAtTurnEnd: true,
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };

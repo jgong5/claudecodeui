@@ -952,6 +952,8 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
+  // The part of that hold only the static rule knows about.
+  let heldForUntrackedWork = false;
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
@@ -1011,8 +1013,11 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   releasePromptStream = input.release;
   // Messages are applied to the live process as they come; a failed control
   // call costs only that setting, never the running turn.
-  const applyControl = (label, call) => Promise.resolve().then(call).catch((error) => {
+  // Resolves whether the CLI took the change, so only a taken one is
+  // recorded and a refused one is tried again with the next message.
+  const applyControl = (label, call) => Promise.resolve().then(call).then(() => true, (error) => {
     console.warn(`[Claude SDK] Could not apply ${label} to the live session:`, error?.message || error);
+    return false;
   });
   const controls = {
     releaseInput: () => releasePromptStream(),
@@ -1025,6 +1030,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // after the current `result` — so a `result` with any left is not the
     // end of the exchange. Stop cancels them.
     pendingPushes: new Set(),
+    // Uuids of every message this run wrote to stdin, so their echoes — and
+    // only theirs — are kept from the client. The CLI echoes real content
+    // too (local command output, `!` bash input), which must still render.
+    sentUuids: new Set(),
+    // Set by a Stop that arrived before the process was spawned.
+    cancelledBeforeStart: false,
     // abort-session already sent the stopped turn's `complete`.
     markAborted: () => {
       turnCompleteSent = true;
@@ -1043,21 +1054,32 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       // Before the process exists the message just waits in the stream and
       // runs with the settings it is being started with.
       if (queryInstance && sdkOptions) {
-        if (nextOptions.model !== sdkOptions.model) {
-          await applyControl('the model', () => queryInstance.setModel(nextOptions.model));
+        if (
+          nextOptions.model !== sdkOptions.model
+          && await applyControl('the model', () => queryInstance.setModel(nextOptions.model))
+        ) {
           sdkOptions.model = nextOptions.model;
         }
-        if ((nextOptions.permissionMode || 'default') !== (sdkOptions.permissionMode || 'default')) {
-          await applyControl('the permission mode', () => queryInstance.setPermissionMode(nextOptions.permissionMode || 'default'));
+        // Recorded only once taken: a refused switch to bypassPermissions
+        // must not make canUseTool approve everything on its own.
+        if (
+          (nextOptions.permissionMode || 'default') !== (sdkOptions.permissionMode || 'default')
+          && await applyControl('the permission mode', () => queryInstance.setPermissionMode(nextOptions.permissionMode || 'default'))
+        ) {
           sdkOptions.permissionMode = nextOptions.permissionMode;
         }
-        if (nextOptions.effort !== sdkOptions.effort || nextOptions.settings?.ultracode !== sdkOptions.settings?.ultracode) {
+        if (
+          (nextOptions.effort !== sdkOptions.effort || nextOptions.settings?.ultracode !== sdkOptions.settings?.ultracode)
+          // The settings schema has no `max` (low…xhigh) and quietly drops
+          // it, so that one only applies when a process is started with it.
+          && nextOptions.effort !== 'max'
           // `null` clears a key from the flag layer (see applyClaudeEffort).
-          await applyControl('the effort', () => queryInstance.applyFlagSettings({
+          && await applyControl('the effort', () => queryInstance.applyFlagSettings({
             effortLevel: nextOptions.effort ?? null,
             ultracode: nextOptions.settings?.ultracode ?? null,
             enableWorkflows: nextOptions.settings?.enableWorkflows ?? null
-          }));
+          }))
+        ) {
           sdkOptions.effort = nextOptions.effort;
           sdkOptions.settings = nextOptions.settings;
         }
@@ -1091,6 +1113,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       for (const message of messages) {
         const uuid = createRequestId();
         controls.pendingPushes.add(uuid);
+        controls.sentUuids.add(uuid);
         // `next` is what the CLI gives a message typed mid-turn: folded into
         // the running turn at its next step, or run right after it.
         input.push({ ...message, uuid, priority: 'next' });
@@ -1101,6 +1124,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   // This run owns the session's process from here: any earlier one is
   // superseded (see addSession).
   const takeOver = () => {
+    ownsProcess = true;
     if (onTurnSettled) {
       turnWaiters.push(onTurnSettled);
     }
@@ -1108,6 +1132,9 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       addSession(sessionKey(), null, ws, controls);
     }
   };
+  // False for a message pushed into another run's process: if its own
+  // setup fails, that process, its entry and its turn are not its to end.
+  let ownsProcess = false;
   if (!pushing) {
     takeOver();
   }
@@ -1143,7 +1170,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       // It let go of its input meanwhile; a held send takes the session over.
       takeOver();
     }
-    input.unshift(promptMessages);
+    // Given a uuid like a pushed message, so its echo is recognised.
+    const ownPrompt = promptMessages.map((message) => ({ ...message, uuid: createRequestId() }));
+    for (const message of ownPrompt) {
+      controls.sentUuids.add(message.uuid);
+    }
+    input.unshift(ownPrompt);
 
     const mcpServers = await loadMcpConfig(options.cwd);
     if (mcpServers) {
@@ -1260,6 +1292,14 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 
     // The SDK's own `query`, unless the caller supplies one (tests script the
     // stream to drive the hold logic below without a CLI process).
+    if (controls.cancelledBeforeStart) {
+      // Stopped while setting up: abort-session already reported the end.
+      if (getSession(sessionKey())?.controls === controls) {
+        removeSession(sessionKey());
+      }
+      return;
+    }
+
     const createQuery = context.createQuery ?? query;
     try {
       queryInstance = createQuery({
@@ -1307,7 +1347,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       }
 
       // The CLI took a message from stdin. The client already shows it.
-      if (message.type === 'user' && message.isReplay) {
+      if (message.type === 'user' && message.isReplay && controls.sentUuids.delete(message.uuid)) {
         controls.pendingPushes.delete(message.uuid);
         continue;
       }
@@ -1369,7 +1409,9 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       if (message.type === 'result' && controls.pendingPushes.size > 0) {
         // A pushed message is still queued: the CLI runs it as a turn of its
         // own next. That turn ends the exchange for the client, and stdin has
-        // to stay open for whatever it starts.
+        // to stay open for whatever it starts. The ceiling still bounds an
+        // echo that never comes (0 keeps it off).
+        scheduleRelease();
       } else if (message.type === 'result') {
         assistantBudgetSent = false;
         // The turn is done as far as the client is concerned. A stopped turn's
@@ -1427,11 +1469,13 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         // alive for the full ceiling with nothing outstanding.
         //
         // A pushed message's turn is the user talking, not the held work
-        // reporting back, so it keeps an existing hold. ponytail: that can
-        // outlast work that settled meanwhile, until the ceiling or `/exit`;
-        // tracking Monitor/ScheduleWakeup ends would make it exact.
+        // reporting back, so it keeps a hold for untracked work (Monitor,
+        // ScheduleWakeup, CronCreate) — nothing else says when that is done.
+        // Tracked tasks need no such help: the tracker knows exactly.
+        const keepUntrackedHold = userTurn && heldForUntrackedWork;
         const holdForTurn = (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding)
-          || (userTurn && heldForBackgroundWork);
+          || keepUntrackedHold;
+        heldForUntrackedWork = (backgroundWorkPending && !sawTaskEventThisTurn) || keepUntrackedHold;
         userTurn = false;
         backgroundWorkPending = false;
         sawTaskEventThisTurn = false;
@@ -1482,6 +1526,13 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 
   } catch (error) {
     console.error('SDK query error:', error);
+
+    if (!ownsProcess) {
+      // A pushed message whose own setup failed (an unreadable attachment,
+      // say): report it, and leave the process and its turn to their run.
+      ws.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: sessionId || null, provider: 'claude' }));
+      return;
+    }
 
     // Clean up session on error — only while this run still owns the map entry
     // (a superseding run may have replaced it).
@@ -1542,10 +1593,15 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 async function abortClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
 
-  // A run still setting up has no process to interrupt yet.
-  if (!session?.instance) {
+  if (!session) {
     console.log(`Session ${sessionId} not found`);
     return false;
+  }
+  // A run still setting up has no process yet: it is told not to start one.
+  if (!session.instance) {
+    session.controls.cancelledBeforeStart = true;
+    session.controls.markAborted();
+    return true;
   }
 
   try {
@@ -1717,14 +1773,19 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 }
 
 /**
- * The runtime's `run`: settles when the caller's turn ends rather than when
- * the process does. A process held for background work can outlive its turn
- * indefinitely (BG_WAIT_CEILING_MS=0), and callers such as the scheduled-
- * message dispatcher or the agent API must not wait on it. The run loop goes
+ * The runtime's `run`. With `settleAtTurnEnd` (the chat gateway, and through
+ * it the scheduled-message dispatcher) it settles when the caller's turn ends
+ * rather than when the process does: a process held for background work can
+ * outlive its turn indefinitely (BG_WAIT_CEILING_MS=0), and the run loop goes
  * on in the background. Resolves `{ pushed: false }` when a joined send found
  * the process no longer taking input.
  */
 function runClaudeTurn(command, options, ws, context) {
+  // One-shot callers (the agent API, commit messages) want the finished work,
+  // background agents included, as on a process-scoped run.
+  if (!options.settleAtTurnEnd) {
+    return queryClaudeSDK(command, options, ws, context);
+  }
   return new Promise((resolve, reject) => {
     queryClaudeSDK(command, options, ws, context, resolve).then(resolve, reject);
   });

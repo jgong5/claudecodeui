@@ -256,10 +256,10 @@ test('a turn whose tool emits no task events still holds on the static rule', as
 /** The CLI's echo of a message it took from stdin (`replay-user-messages`). */
 const replay = (uuid: unknown) => ({ type: 'user', isReplay: true, uuid, session_id: NATIVE_ID, parent_tool_use_id: null, message: { role: 'user', content: 'echo' } });
 
-/** Pushes a message through the runtime's `run`, which settles with the message's turn. */
+/** Pushes a message through the runtime's `run` as the chat gateway does, settling with the message's turn. */
 const send = (run: RunContext, content: string, writer: { send: (message: NormalizedMessage) => void }, options: Record<string, unknown> = {}) => {
   let settled = false;
-  const turn = claudeRuntime.run(content, { sessionId: SESSION_ID, cwd: run.cwd, ...options }, writer as never, run.context)
+  const turn = claudeRuntime.run(content, { sessionId: SESSION_ID, cwd: run.cwd, settleAtTurnEnd: true, ...options }, writer as never, run.context)
     .then((value) => { settled = true; return value; });
   return { turn, settled: () => settled };
 };
@@ -341,10 +341,23 @@ test('the turn that starts a process settles before the process held for its wor
       isProviderInstalled: async () => true,
       createQuery,
     };
-    const turn = claudeRuntime.run('watch it', { sessionId: SESSION_ID, cwd }, createWriter().writer as never, context);
+    const turn = claudeRuntime.run('watch it', { sessionId: SESSION_ID, cwd, settleAtTurnEnd: true }, createWriter().writer as never, context);
     await holdForMonitor(script);
     await turn;
     assert.equal(script.released(), false, 'the process lives on; a dispatcher awaiting the turn does not wait for it');
+
+    // A one-shot caller (the agent API) waits for the work, as before.
+    let agentRunSettled = false;
+    const agentRun = claudeRuntime.run('again', { sessionId: 'agent-api-session', cwd }, createWriter().writer as never, context)
+      .then(() => { agentRunSettled = true; });
+    await settle();
+    script.emit(init());
+    script.emit(toolUse('toolu_monitor2', 'Monitor', { command: 'tail -f y', description: 'watch', timeout_ms: 1000 }));
+    script.emit(result());
+    await settle();
+    assert.equal(agentRunSettled, false, 'held work keeps the agent API waiting');
+    script.end();
+    await agentRun;
   } finally {
     script.end();
     await settle();
@@ -464,5 +477,43 @@ test('a process held with no tracked task is listed with an empty task list', as
     assert.equal(entry.sessionId, SESSION_ID);
     assert.deepEqual(entry.tasks, []);
     assert.equal(typeof entry.startedAt, 'number');
+  });
+});
+
+test('echoes of our own prompts are dropped, the CLI\'s own output still renders', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await settle();
+    const ownPrompt = script.queries[0].input[0];
+    script.emit(replay(ownPrompt.uuid));
+    script.emit({
+      type: 'user', isReplay: true, uuid: 'cli-own-row', session_id: NATIVE_ID, parent_tool_use_id: null,
+      message: { role: 'user', content: '<local-command-stdout>Context usage: 12%</local-command-stdout>' },
+    });
+    await settle();
+
+    const texts = sent.filter((message) => message.kind === 'text');
+    assert.deepEqual(texts.map((message) => [message.role, message.content]), [['assistant', 'Context usage: 12%']]);
+  });
+});
+
+test('a tracked task that settles inside a pushed turn lets the process go', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    script.emit(init());
+    script.emit(toolUse('toolu_agent', 'Agent', { prompt: 'Survey', run_in_background: true }));
+    script.emit(taskStarted('a1', 'toolu_agent', 'local_agent'));
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), false, 'held for the agent');
+
+    send(run, 'how is it going?', createWriter().writer);
+    await settle();
+    // The CLI folds the agent's report into the user's turn.
+    script.emit(replay(lastInput(script).uuid));
+    script.emit(taskNotification('a1', 'toolu_agent', 'completed'));
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), true, 'nothing tracked is left and nothing untracked was held');
   });
 });
