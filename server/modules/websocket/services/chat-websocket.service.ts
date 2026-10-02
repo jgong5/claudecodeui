@@ -295,13 +295,21 @@ async function dispatchRun(
   };
 
   let failure: string | null = null;
+  let outcome: unknown;
   try {
     // Runs only now that the session is reserved, because an edit rewinds the
     // conversation here and a rewind for a run that was never admitted cannot
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
-    await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    // A joined send must never start a process of its own: it would stream
+    // into a run that may already have completed.
+    outcome = await dependencies.runtime.run(
+      provider,
+      command,
+      startedRun ? runtimeOptions : { ...runtimeOptions, joinedRun: true },
+      run.writer,
+    );
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
@@ -315,6 +323,12 @@ async function dispatchRun(
     if (startedRun) {
       chatRunRegistry.completeRunIfCurrent(startedRun, { exitCode: 1 });
     }
+  }
+
+  // The joined process let go of its input before taking the message (its
+  // turn ended meanwhile): send it as a run of its own.
+  if (!startedRun && (outcome as AnyRecord | undefined)?.pushed === false) {
+    return dispatchRun(ws, userId, sessionId, session, data, dependencies, extraRuntimeOptions, beforeRun);
   }
 
   return { started: true, error: failure };
@@ -523,7 +537,10 @@ function handleChatExit(
     return;
   }
 
-  dependencies.runtime.exit(session.provider as LLMProvider, sessionId);
+  if (!dependencies.runtime.exit(session.provider as LLMProvider, sessionId)) {
+    sendProtocolError(ws, 'NO_LIVE_PROCESS', `Session "${sessionId}" has no live process to end.`, sessionId);
+    return;
+  }
   if (chatRunRegistry.isProcessing(sessionId)) {
     chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: true });
   } else {

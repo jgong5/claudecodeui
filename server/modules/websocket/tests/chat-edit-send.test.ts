@@ -66,6 +66,8 @@ type RunCall = { provider: string; command: string; options: Record<string, unkn
  * test ends, so no stub run is left pending for the rest of the file.
  */
 let holdRun: Promise<void> | null = null;
+/** Set by a test whose joined send finds the process no longer taking input. */
+let joinedProcessLetGo = false;
 let releaseHeldRun: (() => void) | null = null;
 
 function holdTheNextRun(): void {
@@ -104,11 +106,20 @@ async function withGateway(
           hasRuntime: () => true,
           // A live process takes a plain send mid-turn; an edit never asks.
           acceptsLiveInput: () => true,
+          // No process to end: what a non-Claude session, or one still
+          // setting up, answers to `/exit`.
+          exit: () => false,
           run: async (runProvider: string, command: string, options: Record<string, unknown>) => {
             runs.push({ provider: runProvider, command, options });
+            if (options.joinedRun && joinedProcessLetGo) {
+              // Its turn ended between the join and the push.
+              chatRunRegistry.completeRun(SESSION_ID, { exitCode: 0 });
+              return { pushed: false };
+            }
             if (holdRun) {
               await holdRun;
             }
+            return undefined;
           },
         } as never,
       },
@@ -119,6 +130,7 @@ async function withGateway(
     releaseHeldRun?.();
     releaseHeldRun = null;
     holdRun = null;
+    joinedProcessLetGo = false;
     connectedClients.clear();
     chatRunRegistry.clearAll();
     closeConnection();
@@ -321,5 +333,35 @@ test('a plain send mid-turn joins the running turn, where an edit is refused', a
     assert.deepEqual(runs.map((run) => run.command), ['first', 'and also']);
     assert.equal(socket.frames.some((frame) => frame.code === 'RUN_IN_PROGRESS'), false);
     assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true, 'still the one running turn');
+  });
+});
+
+test('a joined send whose process let go of its input is sent as a run of its own', async () => {
+  await withGateway('claude', async ({ socket, runs }) => {
+    holdTheNextRun();
+    joinedProcessLetGo = true;
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'first' }));
+    await settle();
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'late' }));
+    await settle();
+
+    assert.deepEqual(
+      runs.map((run) => [run.command, run.options.joinedRun ?? false]),
+      [['first', false], ['late', true], ['late', false]],
+    );
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true, 'the retry is the running turn now');
+  });
+});
+
+test('/exit with no live process is refused and leaves the running turn alone', async () => {
+  await withGateway('claude', async ({ socket }) => {
+    holdTheNextRun();
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'first' }));
+    await settle();
+    socket.emit('message', JSON.stringify({ type: 'chat.exit', sessionId: SESSION_ID }));
+    await settle();
+
+    assert.equal(socket.frames.at(-1)?.code, 'NO_LIVE_PROCESS');
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true);
   });
 });

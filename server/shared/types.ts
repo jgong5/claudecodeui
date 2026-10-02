@@ -620,6 +620,7 @@ export type ProviderRuntimeContext = {
     setModel?(model?: string): Promise<void>;
     setPermissionMode?(mode: string): Promise<void>;
     cancelAsyncMessage?(uuid: string): Promise<boolean>;
+    applyFlagSettings?(settings: AnyRecord): Promise<void>;
   };
 };
 
