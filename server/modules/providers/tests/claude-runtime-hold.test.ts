@@ -9,7 +9,6 @@ import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude
 import {
   abortClaudeSDKSession,
   claudeRuntime,
-  exitClaudeSDKSession,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
   stopClaudeSDKTask,
@@ -463,10 +462,10 @@ test('Stop interrupts the turn and cancels queued pushes; /exit closes the proce
     assert.deepEqual(live.calls, [`cancel:${pushedUuid}`, 'interrupt'], 'not closed');
     assert.equal(live.released, false, 'the stopped turn\'s result decides the hold');
 
-    assert.equal(exitClaudeSDKSession(SESSION_ID), true);
+    assert.equal(claudeRuntime.exit(SESSION_ID), true);
     assert.equal(live.calls.at(-1), 'close');
     assert.deepEqual(listClaudeSDKBackgroundWork(), []);
-    assert.equal(exitClaudeSDKSession(SESSION_ID), false, 'nothing left to end');
+    assert.equal(claudeRuntime.exit(SESSION_ID), false, 'nothing left to end');
   });
 });
 
@@ -526,9 +525,24 @@ test('a tracked task that settles inside a pushed turn lets the process go', asy
 
 test('/exit while the run is still setting up keeps the process from starting', async () => {
   await withRun(async ({ script }) => {
-    assert.equal(exitClaudeSDKSession(SESSION_ID), true);
+    assert.equal(claudeRuntime.exit(SESSION_ID), true);
     await settle();
     assert.equal(script.queries.length, 0, 'no process spawned');
     assert.deepEqual(listClaudeSDKBackgroundWork(), []);
+  });
+});
+
+test('a second send before the process starts is queued behind the first prompt', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    // Still in setup: nothing spawned yet.
+    send(run, 'and quickly this', createWriter().writer);
+    await settle();
+
+    assert.equal(script.queries.length, 1, 'one process for both');
+    assert.deepEqual(
+      script.queries[0].input.map((message) => (message.message as { content: string }).content),
+      ['hello', 'and quickly this'],
+    );
   });
 });

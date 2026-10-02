@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
@@ -11,6 +11,7 @@ import type { PermissionMode, Project, ProjectSession, SessionActivityMap } from
  * A Claude session takes a new message into its live process — mid-turn or
  * while background work runs — so the composer sends it straight away. Only
  * an edit still replaces the process the work runs under, and asks first.
+ * `/exit` ends that process over the chat socket.
  */
 
 const PROJECT: Project = { projectId: 'project-1', displayName: 'Project One', fullPath: '/tmp/project-one' };
@@ -33,7 +34,12 @@ const backgroundOnly: SessionActivityMap = new Map([[
 
 const submit = async (
   processingSessions: SessionActivityMap,
-  { provider = 'claude', isLoading = false }: { provider?: 'claude' | 'codex'; isLoading?: boolean } = {},
+  {
+    provider = 'claude',
+    isLoading = false,
+    edit = false,
+    content = 'hello',
+  }: { provider?: 'claude' | 'codex'; isLoading?: boolean; edit?: boolean; content?: string } = {},
 ) => {
   const sent: Array<{ type: string }> = [];
   const view = renderHook(() =>
@@ -58,15 +64,32 @@ const submit = async (
       setPendingPermissionRequests: () => undefined,
     }),
   );
-  await act(async () => { view.result.current.setInput('hello'); });
+  if (edit) {
+    await act(async () => { view.result.current.beginEditMessage({ type: 'user', content: 'old', timestamp: 1, transcriptAnchorId: 'anchor-1' }); });
+  }
+  // A `/` command only runs once the command list has loaded.
+  if (content.startsWith('/')) {
+    await waitFor(() => assert.ok(view.result.current.slashCommandsCount > 0));
+  }
+  await act(async () => { view.result.current.setInput(content); });
   await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
-  return { sends: sent.filter((message) => message.type === 'chat.send'), view };
+  return { sends: sent.filter((message) => message.type === 'chat.send'), sent, view };
 };
 
 const confirm = vi.fn<(message?: string) => boolean>();
 
+const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).includes('/api/commands/list')) {
+      return json({ builtIn: [{ name: '/exit', description: 'End the process', namespace: 'builtin', metadata: { type: 'builtin' } }], custom: [] });
+    }
+    if (String(url).includes('/api/commands/execute')) {
+      return json({ type: 'builtin', action: 'exit', data: {}, command: '/exit' });
+    }
+    return json([]);
+  }));
   vi.stubGlobal('confirm', confirm);
   confirm.mockReset();
   localStorage.clear();
@@ -96,4 +119,22 @@ test('other providers still queue a message sent mid-turn', async () => {
 
   assert.equal(sends.length, 0);
   assert.equal(view.result.current.queuedDraft?.content, 'hello');
+});
+
+test('an edit on a session with background work asks first, naming the session\'s own tasks', async () => {
+  confirm.mockReturnValue(false);
+  const { sent, view } = await submit(backgroundOnly, { edit: true });
+
+  assert.equal(confirm.mock.calls.length, 1);
+  assert.match(String(confirm.mock.calls[0]?.[0]), /• Workflow frontend-architecture-audit\n• Agent Survey the repo/);
+  assert.equal(sent.some((message) => message.type === 'chat.edit-send'), false, 'declined: nothing is sent');
+  assert.equal(view.result.current.input, 'hello', 'and the draft stays in the composer');
+});
+
+test('/exit asks the chat socket to end the session\'s process', async () => {
+  const { sent, sends } = await submit(new Map(), { content: '/exit' });
+
+  await waitFor(() => assert.ok(sent.some((message) => message.type === 'chat.exit')));
+  assert.deepEqual(sent.find((message) => message.type === 'chat.exit'), { type: 'chat.exit', sessionId: 'session-1' });
+  assert.equal(sends.length, 0, 'not sent to the model');
 });

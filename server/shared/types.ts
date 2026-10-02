@@ -624,6 +624,20 @@ export type ProviderRuntimeContext = {
   };
 };
 
+/**
+ * What a provider runtime's `run` settles with (see `IProviderRuntime.run`).
+ *
+ * `undefined` for every run that was accepted, however it ended — success,
+ * failure and abort are all reported on the writer, never here. The only other
+ * value is `{ pushed: false }`, returned solely to a send the chat gateway
+ * joined to a running turn (`options.joinedRun`) when the session's live
+ * process stopped taking input before the message reached it. The runtime has
+ * then started nothing and written nothing, and the caller must dispatch the
+ * message again as a run of its own. Runtimes that never accept joined sends
+ * always settle with `undefined`.
+ */
+export type ProviderRunOutcome = void | { pushed: false };
+
 export type ProviderRunFunction = (
   command: string,
   options: AnyRecord,

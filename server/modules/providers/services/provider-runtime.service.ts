@@ -7,6 +7,7 @@ import type {
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRunFunction,
+  ProviderRunOutcome,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
@@ -67,7 +68,7 @@ export function createProviderRuntimeService(
     command: string,
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
-  ): Promise<unknown> => {
+  ): Promise<ProviderRunOutcome> => {
     const provider = dependencies.resolveProvider(providerName);
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };

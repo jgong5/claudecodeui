@@ -189,6 +189,8 @@ test('a refused stop request does not idle the session it was sent on', () => {
 
   dispatch(event({ kind: 'protocol_error', code: 'NO_SUCH_TASK', error: 'Session has no such task' }));
   dispatch(event({ kind: 'protocol_error', code: 'TASK_ID_REQUIRED', error: 'chat.stop-task requires a taskId' }));
+  // Nor does an /exit that found no process to end (another provider's run).
+  dispatch(event({ kind: 'protocol_error', code: 'NO_LIVE_PROCESS', error: 'Session has no live process to end.' }));
   assert.deepEqual(log, []);
 
   // Any other rejection still means the send never became a run.

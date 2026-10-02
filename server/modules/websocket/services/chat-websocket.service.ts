@@ -17,6 +17,7 @@ import type {
   AuthenticatedWebSocketRequest,
   LLMProvider,
   ProviderPermissionDecision,
+  ProviderRunOutcome,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { createCompleteMessage, parseIncomingJsonObject } from '@/shared/utils.js';
@@ -71,7 +72,7 @@ export type ProviderRuntimeGateway = {
     command: string,
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
-  ): Promise<unknown>;
+  ): Promise<ProviderRunOutcome>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   /** Whether a send mid-turn would be taken by the session's running process. */
   acceptsLiveInput(provider: LLMProvider, sessionId: string): boolean;
@@ -298,7 +299,7 @@ async function dispatchRun(
   };
 
   let failure: string | null = null;
-  let outcome: unknown;
+  let outcome: ProviderRunOutcome = undefined;
   try {
     // Runs only now that the session is reserved, because an edit rewinds the
     // conversation here and a rewind for a run that was never admitted cannot
@@ -330,7 +331,7 @@ async function dispatchRun(
 
   // The joined process let go of its input before taking the message (its
   // turn ended meanwhile): send it as a run of its own.
-  if (!startedRun && (outcome as AnyRecord | undefined)?.pushed === false) {
+  if (!startedRun && outcome?.pushed === false) {
     return dispatchRun(ws, userId, sessionId, session, data, dependencies, extraRuntimeOptions, beforeRun);
   }
 
