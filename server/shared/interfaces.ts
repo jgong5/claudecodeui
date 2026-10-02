@@ -39,12 +39,20 @@ export interface IProviderRuntime {
   abort(sessionId: string): boolean | Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
-   * Sessions with background tasks still outstanding, whether or not their
-   * turn has ended. Only a runtime that keeps its process open past a turn for
-   * such work has anything to report; the others leave this undefined and the
+   * Sessions whose process is still up and taking input, whether or not their
+   * turn has ended, with the background tasks each still has outstanding
+   * (possibly none). Only a runtime that keeps its process open past a turn
+   * has anything to report; the others leave this undefined and the
    * running-sessions list falls back to chat runs alone.
    */
   listBackgroundWork?(): Array<{ sessionId: string; tasks: BackgroundTaskSummary[] }>;
+  /**
+   * Whether a message sent now would be taken by the session's live process.
+   * Runtimes that start a process per turn leave this undefined.
+   */
+  acceptsLiveInput?(sessionId: string): boolean;
+  /** Ends the session's live process and its background work. False when there is none. */
+  exit?(sessionId: string): boolean;
   /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already

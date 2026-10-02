@@ -370,11 +370,21 @@ export function useChatComposerState({
           onShowSettings?.();
           break;
 
+        case 'exit': {
+          // The process lives in the chat runtime, which ends it over the
+          // socket; a session without one has nothing to end.
+          const exitSessionId = currentSessionId || selectedSession?.id;
+          if (exitSessionId) {
+            sendMessage({ type: 'chat.exit', sessionId: exitSessionId });
+          }
+          break;
+        }
+
         default:
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage],
+    [onFileOpen, onShowSettings, addMessage, currentSessionId, selectedSession?.id, sendMessage],
   );
 
   const closeCommandModal = useCallback(() => {
@@ -685,7 +695,10 @@ export function useChatComposerState({
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
-      if (isLoading) {
+      // Claude takes it right away instead — its live process picks the
+      // message up mid-turn, as the CLI does — except for an edit, which
+      // rewrites the conversation and has to wait for the turn to end.
+      if (isLoading && (provider !== 'claude' || editingAnchorId)) {
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
@@ -865,12 +878,13 @@ export function useChatComposerState({
         });
       }
 
-      // A new turn replaces the CLI process a session's background work runs
+      // An edit replaces the CLI process a session's background work runs
       // under: the agents, workflows and commands it still has going are
       // stopped, or finish where nothing is listening. Sending is the user's
-      // call, but not one to make for them.
+      // call, but not one to make for them. A plain message is pushed into
+      // the live process and leaves the work running.
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
-      if (backgroundActivity?.background) {
+      if (editingAnchorId && backgroundActivity?.background) {
         const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
           .map((task) => `• ${describeBackgroundTask(task, t)}`)
           .join('\n');

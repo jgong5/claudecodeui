@@ -174,7 +174,11 @@ export const sessionsService = {
         entries.push({
           sessionId,
           provider: provider.id,
-          startedAt: Math.min(...tasks.map((task) => task.startedAt)),
+          // A process held with no tracked task (Monitor, ScheduleWakeup)
+          // dates from its last turn instead.
+          startedAt: tasks.length > 0
+            ? Math.min(...tasks.map((task) => task.startedAt))
+            : chatRunRegistry.getRun(sessionId)?.startedAt ?? Date.now(),
           // The completed run stays in the registry for a while, and a client
           // that subscribes with its lastSeq replays the tail it missed.
           lastSeq: chatRunRegistry.getRun(sessionId)?.lastSeq ?? 0,

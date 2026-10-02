@@ -19,7 +19,7 @@ import type {
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { createCompleteMessage, parseIncomingJsonObject } from '@/shared/utils.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -73,8 +73,12 @@ export type ProviderRuntimeGateway = {
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  /** Whether a send mid-turn would be taken by the session's running process. */
+  acceptsLiveInput(provider: LLMProvider, sessionId: string): boolean;
+  /** Ends the session's live process outright (`/exit`). */
+  exit(provider: LLMProvider, sessionId: string): boolean;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
-  /** Whether a provider runtime still holds background work for the session after its turn ended. */
+  /** Whether a provider runtime still holds a live process for the session — after its turn ended, for background work. */
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
@@ -220,13 +224,21 @@ async function dispatchRun(
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
 
-  const run = chatRunRegistry.startRun({
+  const startedRun = chatRunRegistry.startRun({
     appSessionId: sessionId,
     provider,
     providerSessionId: session.provider_session_id,
     connection: ws,
     userId,
   });
+  // Mid-turn, a runtime whose process takes live input (Claude) gets the
+  // message pushed in, as typing into the CLI does: the send joins the run
+  // already streaming instead of being refused. An edit never joins — it
+  // rewrites the conversation, which takes a new run.
+  const run = startedRun
+    ?? (!beforeRun && dependencies.runtime.acceptsLiveInput(provider, sessionId)
+      ? chatRunRegistry.getRun(sessionId) ?? null
+      : null);
 
   if (!run) {
     if (ws) {
@@ -299,7 +311,10 @@ async function dispatchRun(
     // "processing" forever on every connected client. Scoped to THIS run —
     // a queued message can start the session's next run before this promise
     // settles, and the session-keyed completeRun would kill that new run.
-    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
+    // A joined run belongs to the send that started it.
+    if (startedRun) {
+      chatRunRegistry.completeRunIfCurrent(startedRun, { exitCode: 1 });
+    }
   }
 
   return { started: true, error: failure };
@@ -487,6 +502,38 @@ async function handleChatStopTask(
 }
 
 /**
+ * Handles `chat.exit` (the `/exit` command): ends the session's live provider
+ * process — its current turn and its background work with it — and reports
+ * the end like a stop does. A session with no live process has nothing to end.
+ */
+function handleChatExit(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): void {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.exit requires a sessionId.');
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    sendProtocolError(ws, 'SESSION_NOT_FOUND', `Session "${sessionId}" was not found.`, sessionId);
+    return;
+  }
+
+  dependencies.runtime.exit(session.provider as LLMProvider, sessionId);
+  if (chatRunRegistry.isProcessing(sessionId)) {
+    chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: true });
+  } else {
+    // Between turns the run has already reported its end, so the registry
+    // would drop another; this tab still has to drop its background state.
+    sendJson(ws, createCompleteMessage({ provider: session.provider as LLMProvider, sessionId, exitCode: 0, aborted: true }));
+  }
+}
+
+/**
  * Handles `chat.subscribe`: for each requested session, reports whether a run
  * is processing, re-attaches the live stream to this socket, replays missed
  * events (seq > lastSeq), and includes pending permission requests.
@@ -581,6 +628,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.send`                { sessionId, content, options? }
  * - `chat.abort`               { sessionId }
  * - `chat.stop-task`           { sessionId, taskId }
+ * - `chat.exit`                { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
@@ -686,6 +734,9 @@ export function handleChatConnection(
           return;
         case 'chat.stop-task':
           await handleChatStopTask(ws, data, dependencies);
+          return;
+        case 'chat.exit':
+          handleChatExit(ws, data, dependencies);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, data, dependencies);

@@ -7,6 +7,8 @@ import test from 'node:test';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
+  abortClaudeSDKSession,
+  exitClaudeSDKSession,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
   stopClaudeSDKTask,
@@ -29,33 +31,59 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  /** Every query the runtime built, in order; `emit` feeds the latest. */
+  queries: ScriptedQuery[];
+};
+
+type ScriptedQuery = {
+  /** What the runtime wrote to this query's stdin. */
+  input: Array<Record<string, unknown>>;
+  calls: string[];
+  released: boolean;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
 function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContext['createQuery']>; script: Scripted } {
-  const queue: Array<Record<string, unknown> | null> = [];
-  let wake: (() => void) | null = null;
-  let released = false;
+  // The runtime builds its query after a few awaits, so the first queue exists
+  // up front for whatever the test emits before then.
+  const queues: Array<Array<Record<string, unknown> | null>> = [[]];
+  const wakes: Array<() => void> = [() => {}];
   const stopped: string[] = [];
+  const queries: ScriptedQuery[] = [];
 
   const script: Scripted = {
-    emit: (message) => { queue.push(message); wake?.(); },
-    end: () => { queue.push(null); wake?.(); },
-    released: () => released,
+    emit: (message) => {
+      const index = Math.max(queries.length - 1, 0);
+      queues[index].push(message);
+      wakes[index]();
+    },
+    end: () => { queues.forEach((queue, index) => { queue.push(null); wakes[index](); }); },
+    released: () => queries[queries.length - 1].released,
     stopped,
+    queries,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+    const index = queries.length;
+    if (!queues[index]) {
+      queues.push([]);
+      wakes.push(() => {});
+    }
+    const queue = queues[index];
+    const scripted: ScriptedQuery = { input: [], calls: [], released: false };
+    queries.push(scripted);
+
     void (async () => {
-      for await (const _message of prompt) { /* the CLI reads its stdin */ }
-      released = true;
+      for await (const message of prompt) {
+        scripted.input.push(message as Record<string, unknown>);
+      }
+      scripted.released = true;
     })();
 
     const iterator = (async function* () {
       for (;;) {
         if (queue.length === 0) {
-          await new Promise<void>((resolve) => { wake = resolve; });
-          wake = null;
+          await new Promise<void>((resolve) => { wakes[index] = resolve; });
           continue;
         }
         const next = queue.shift();
@@ -67,7 +95,11 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     })();
 
     return Object.assign(iterator, {
-      interrupt: async () => {},
+      interrupt: async () => { scripted.calls.push('interrupt'); },
+      close: () => { scripted.calls.push('close'); queue.push(null); wakes[index](); },
+      setModel: async (model?: string) => { scripted.calls.push(`setModel:${model}`); },
+      setPermissionMode: async (mode: string) => { scripted.calls.push(`setPermissionMode:${mode}`); },
+      cancelAsyncMessage: async (uuid: string) => { scripted.calls.push(`cancel:${uuid}`); return true; },
       stopTask: async (taskId: string) => { stopped.push(taskId); },
     });
   };
@@ -75,9 +107,15 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   return { createQuery, script };
 }
 
-async function withRun(
-  runTest: (context: { script: Scripted; sent: NormalizedMessage[]; done: Promise<unknown> }) => Promise<void>,
-): Promise<void> {
+type RunContext = {
+  script: Scripted;
+  sent: NormalizedMessage[];
+  done: Promise<unknown>;
+  cwd: string;
+  context: ProviderRuntimeContext;
+};
+
+async function withRun(runTest: (run: RunContext) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
   const sent: NormalizedMessage[] = [];
@@ -94,12 +132,18 @@ async function withRun(
 
   try {
     const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd }, writer as never, context);
-    await runTest({ script, sent, done });
+    await runTest({ script, sent, done, cwd, context });
     script.end();
     await done;
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+}
+
+/** A second writer, standing in for the run a later send registers. */
+function createWriter() {
+  const sent: NormalizedMessage[] = [];
+  return { sent, writer: { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null } };
 }
 
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 25); });
@@ -197,5 +241,107 @@ test('a turn whose tool emits no task events still holds on the static rule', as
     await settle();
 
     assert.equal(script.released(), false, 'Monitor reports no task, so the launch rule decides');
+  });
+});
+
+/** Leaves the session held for a Monitor, which reports no task events. */
+const holdForMonitor = async (script: Scripted) => {
+  script.emit(init());
+  script.emit(toolUse('toolu_monitor', 'Monitor', { command: 'tail -f x', description: 'watch', timeout_ms: 1000 }));
+  script.emit(ack('toolu_monitor', 'Monitor started', {}));
+  script.emit(result());
+  await settle();
+};
+
+test('a message sent while the process is held is pushed into it, not a new process', async () => {
+  await withRun(async ({ script, cwd, context }) => {
+    await holdForMonitor(script);
+    const next = createWriter();
+
+    let settled = false;
+    const pushed = queryClaudeSDK('and then?', { sessionId: SESSION_ID, cwd }, next.writer as never, context)
+      .then(() => { settled = true; });
+    await settle();
+
+    assert.equal(script.queries.length, 1, 'no new query');
+    const [live] = script.queries;
+    assert.deepEqual(live.calls, [], 'nothing interrupted');
+    assert.equal(live.released, false);
+    const last = live.input[live.input.length - 1];
+    assert.equal((last.message as { content: string }).content, 'and then?');
+    assert.equal(last.priority, 'next');
+    assert.equal(settled, false, 'the send waits on the process, like the run that started it');
+
+    // The pushed turn streams to the new send's writer and reports its own end.
+    script.emit(result());
+    await settle();
+    assert.ok(next.sent.some((message) => message.kind === 'complete'));
+
+    script.end();
+    await pushed;
+  });
+});
+
+test('a held process whose next message needs new settings is replaced', async () => {
+  await withRun(async ({ script, cwd, context }) => {
+    await holdForMonitor(script);
+
+    void queryClaudeSDK('think harder', { sessionId: SESSION_ID, cwd, effort: 'high' }, createWriter().writer as never, context);
+    await settle();
+
+    assert.equal(script.queries.length, 2);
+    assert.deepEqual(script.queries[0].calls, ['interrupt']);
+    assert.equal(script.queries[0].released, true);
+  });
+});
+
+test('BG_WAIT_CEILING_MS sets the silence ceiling, and 0 arms none', async () => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  try {
+    process.env.BG_WAIT_CEILING_MS = '20';
+    await withRun(async ({ script }) => {
+      await holdForMonitor(script);
+      await settle();
+      assert.equal(script.released(), true, 'released after 20ms of silence');
+    });
+
+    process.env.BG_WAIT_CEILING_MS = '0';
+    await withRun(async ({ script }) => {
+      await holdForMonitor(script);
+      await settle();
+      assert.equal(script.released(), false, 'held until the work reports or /exit');
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
+});
+
+test('Stop interrupts the turn and cancels pushed messages; /exit closes the process', async () => {
+  await withRun(async ({ script, cwd, context }) => {
+    script.emit(init());
+    await settle();
+    void queryClaudeSDK('also this', { sessionId: SESSION_ID, cwd }, createWriter().writer as never, context);
+    await settle();
+    const [live] = script.queries;
+    const pushedUuid = live.input[live.input.length - 1].uuid;
+
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    assert.deepEqual(live.calls, [`cancel:${pushedUuid}`, 'interrupt'], 'not closed');
+    assert.equal(live.released, false, 'the stopped turn\'s result decides the hold');
+
+    assert.equal(exitClaudeSDKSession(SESSION_ID), true);
+    assert.equal(live.calls.at(-1), 'close');
+    assert.deepEqual(listClaudeSDKBackgroundWork(), []);
+  });
+});
+
+test('a process held with no tracked task is listed with an empty task list', async () => {
+  await withRun(async ({ script }) => {
+    await holdForMonitor(script);
+    assert.deepEqual(listClaudeSDKBackgroundWork(), [{ sessionId: SESSION_ID, tasks: [] }]);
   });
 });

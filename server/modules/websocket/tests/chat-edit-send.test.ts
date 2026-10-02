@@ -102,6 +102,8 @@ async function withGateway(
       {
         runtime: {
           hasRuntime: () => true,
+          // A live process takes a plain send mid-turn; an edit never asks.
+          acceptsLiveInput: () => true,
           run: async (runProvider: string, command: string, options: Record<string, unknown>) => {
             runs.push({ provider: runProvider, command, options });
             if (holdRun) {
@@ -306,4 +308,18 @@ test('a provider that has to branch to rewind is rewound before the run, not dur
     assert.ok(socket.frames.some((frame) => frame.kind === 'history_truncated'));
     assert.equal(truncatedBeforeRewind, true);
   }, CODEX_TRANSCRIPT_ROWS);
+});
+
+test('a plain send mid-turn joins the running turn, where an edit is refused', async () => {
+  await withGateway('claude', async ({ socket, runs }) => {
+    holdTheNextRun();
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'first' }));
+    await settle();
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'and also' }));
+    await settle();
+
+    assert.deepEqual(runs.map((run) => run.command), ['first', 'and also']);
+    assert.equal(socket.frames.some((frame) => frame.code === 'RUN_IN_PROGRESS'), false);
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true, 'still the one running turn');
+  });
 });

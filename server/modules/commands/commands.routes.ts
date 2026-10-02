@@ -204,6 +204,12 @@ const builtInCommands = [
     namespace: "builtin",
     metadata: { type: "builtin" },
   },
+  {
+    name: "/exit",
+    description: "End this session's Claude process, including its background work",
+    namespace: "builtin",
+    metadata: { type: "builtin" },
+  },
 ];
 
 /**
@@ -437,6 +443,10 @@ Custom commands can be created in:
       },
     };
   },
+
+  // The process lives in the chat runtime, so the client ends it over the
+  // chat socket (`chat.exit`) once it gets this back.
+  "/exit": async () => ({ type: "builtin", action: "exit", data: {} }),
 };
 
 /**

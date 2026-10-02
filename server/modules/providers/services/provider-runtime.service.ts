@@ -91,6 +91,16 @@ export function createProviderRuntimeService(
       return Boolean(await dependencies.resolveProvider(providerName).runtime.abort(sessionId));
     },
 
+    /** Whether a send mid-turn would join the session's running process; see IProviderRuntime.acceptsLiveInput. */
+    acceptsLiveInput(providerName: LLMProvider, sessionId: string): boolean {
+      return Boolean(dependencies.resolveProvider(providerName).runtime.acceptsLiveInput?.(sessionId));
+    },
+
+    /** Ends a session's live process (the `/exit` command). */
+    exit(providerName: LLMProvider, sessionId: string): boolean {
+      return Boolean(dependencies.resolveProvider(providerName).runtime.exit?.(sessionId));
+    },
+
     async stopBackgroundTask(providerName: LLMProvider, sessionId: string, taskId: string): Promise<boolean> {
       // A runtime that never holds background work has no task to stop.
       const { runtime } = dependencies.resolveProvider(providerName);

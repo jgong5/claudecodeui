@@ -8,10 +8,9 @@ import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState'
 import type { PermissionMode, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
 
 /**
- * A session whose turn has ended with background work still running keeps
- * its composer usable — but a new turn replaces the CLI process that work
- * runs under, so the work is stopped or finishes where nothing listens. The
- * composer says so and asks before sending; nothing else in the app does.
+ * A Claude session takes a new message into its live process — mid-turn or
+ * while background work runs — so the composer sends it straight away. Only
+ * an edit still replaces the process the work runs under, and asks first.
  */
 
 const PROJECT: Project = { projectId: 'project-1', displayName: 'Project One', fullPath: '/tmp/project-one' };
@@ -32,20 +31,23 @@ const backgroundOnly: SessionActivityMap = new Map([[
   },
 ]]);
 
-const submit = async (processingSessions: SessionActivityMap) => {
+const submit = async (
+  processingSessions: SessionActivityMap,
+  { provider = 'claude', isLoading = false }: { provider?: 'claude' | 'codex'; isLoading?: boolean } = {},
+) => {
   const sent: Array<{ type: string }> = [];
   const view = renderHook(() =>
     useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: SESSION,
       currentSessionId: SESSION.id,
-      provider: 'claude',
+      provider,
       permissionMode: 'default',
       cyclePermissionMode: () => undefined,
       resolvePermissionModeForProvider: () => 'default' as PermissionMode,
       currentProviderModel: 'test-model',
       currentProviderEffort: 'medium',
-      isLoading: false,
+      isLoading,
       processingSessions,
       canAbortSession: false,
       tokenBudget: null,
@@ -75,32 +77,23 @@ afterEach(() => {
   localStorage.clear();
 });
 
-test('sending on a session with background work asks first, naming the session\'s own tasks', async () => {
-  confirm.mockReturnValue(false);
-  const { sends, view } = await submit(backgroundOnly);
-
-  assert.equal(confirm.mock.calls.length, 1);
-  assert.equal(
-    confirm.mock.calls[0]?.[0],
-    'This session still has background work running:\n'
-    + '• Workflow frontend-architecture-audit\n'
-    + '• Agent Survey the repo\n\n'
-    + 'A new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?',
-  );
-  assert.equal(sends.length, 0, 'declined: nothing is sent');
-  assert.equal(view.result.current.input, 'hello', 'and the draft stays in the composer');
-});
-
-test('confirming sends the message', async () => {
-  confirm.mockReturnValue(true);
+test('sending on a session with background work sends without asking', async () => {
   const { sends } = await submit(backgroundOnly);
-
-  assert.equal(sends.length, 1);
-});
-
-test('a session with nothing in the background sends without asking', async () => {
-  const { sends } = await submit(new Map());
 
   assert.equal(confirm.mock.calls.length, 0);
   assert.equal(sends.length, 1);
+});
+
+test('a Claude message sent mid-turn goes out at once instead of being queued', async () => {
+  const { sends, view } = await submit(new Map(), { isLoading: true });
+
+  assert.equal(sends.length, 1);
+  assert.equal(view.result.current.queuedDraft, null);
+});
+
+test('other providers still queue a message sent mid-turn', async () => {
+  const { sends, view } = await submit(new Map(), { provider: 'codex', isLoading: true });
+
+  assert.equal(sends.length, 0);
+  assert.equal(view.result.current.queuedDraft?.content, 'hello');
 });
