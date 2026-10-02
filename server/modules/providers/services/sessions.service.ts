@@ -165,7 +165,7 @@ export const sessionsService = {
     const runningById = new Map(entries.map((entry) => [entry.sessionId, entry]));
 
     for (const provider of providerRegistry.listProviders()) {
-      for (const { sessionId, tasks } of provider.runtime.listBackgroundWork?.() ?? []) {
+      for (const { sessionId, startedAt, tasks } of provider.runtime.listBackgroundWork?.() ?? []) {
         const running = runningById.get(sessionId);
         if (running) {
           running.tasks = tasks;
@@ -174,7 +174,11 @@ export const sessionsService = {
         entries.push({
           sessionId,
           provider: provider.id,
-          startedAt: Math.min(...tasks.map((task) => task.startedAt)),
+          // A process held with no tracked task (Monitor, ScheduleWakeup)
+          // dates from the process instead.
+          startedAt: tasks.length > 0
+            ? Math.min(...tasks.map((task) => task.startedAt))
+            : startedAt ?? Date.now(),
           // The completed run stays in the registry for a while, and a client
           // that subscribes with its lastSeq replays the tail it missed.
           lastSeq: chatRunRegistry.getRun(sessionId)?.lastSeq ?? 0,

@@ -7,6 +7,7 @@ import type {
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRunFunction,
+  ProviderRunOutcome,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
@@ -67,7 +68,7 @@ export function createProviderRuntimeService(
     command: string,
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
-  ): Promise<unknown> => {
+  ): Promise<ProviderRunOutcome> => {
     const provider = dependencies.resolveProvider(providerName);
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };
@@ -89,6 +90,16 @@ export function createProviderRuntimeService(
 
     async abort(providerName: LLMProvider, sessionId: string): Promise<boolean> {
       return Boolean(await dependencies.resolveProvider(providerName).runtime.abort(sessionId));
+    },
+
+    /** Whether a send mid-turn would join the session's running process; see IProviderRuntime.acceptsLiveInput. */
+    acceptsLiveInput(providerName: LLMProvider, sessionId: string): boolean {
+      return Boolean(dependencies.resolveProvider(providerName).runtime.acceptsLiveInput?.(sessionId));
+    },
+
+    /** Ends a session's live process (the `/exit` command). */
+    exit(providerName: LLMProvider, sessionId: string): boolean {
+      return Boolean(dependencies.resolveProvider(providerName).runtime.exit?.(sessionId));
     },
 
     async stopBackgroundTask(providerName: LLMProvider, sessionId: string, taskId: string): Promise<boolean> {

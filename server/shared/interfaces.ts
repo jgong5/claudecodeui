@@ -14,6 +14,7 @@ import type {
   ProviderMcpServer,
   ProviderSkillCreateInput,
   ProviderSkillRemoveInput,
+  ProviderRunOutcome,
   ProviderRuntimeContext,
   ProviderRuntimePermissionGateway,
   ProviderRuntimeWriter,
@@ -30,21 +31,47 @@ import type {
  * execution context is supplied by the application service at call time.
  */
 export interface IProviderRuntime {
+  /**
+   * Runs one user message and streams its events to `writer`.
+   *
+   * By default it settles when the provider's process is done, background
+   * work included, which one-shot callers (the agent API, commit messages)
+   * rely on. Two options change that; runtimes that keep no process between
+   * turns may ignore both:
+   * - `settleAtTurnEnd`: settle once this message's turn has ended (its
+   *   `complete`, a stop, or the process going away) and leave a process held
+   *   for background work running. The chat gateway sets it, so neither it nor
+   *   the scheduled-message dispatcher waits on held work.
+   * - `joinedRun`: the gateway joined this send to the session's running turn
+   *   instead of registering a run, because `acceptsLiveInput` said the live
+   *   process takes input. The runtime must then push the message into that
+   *   process and never start one of its own: if the process has let go of
+   *   its input meanwhile, it settles with `{ pushed: false }` (see
+   *   `ProviderRunOutcome`) and the gateway dispatches the message again.
+   */
   run(
     command: string,
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
-  ): Promise<unknown>;
+  ): Promise<ProviderRunOutcome>;
   abort(sessionId: string): boolean | Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
-   * Sessions with background tasks still outstanding, whether or not their
-   * turn has ended. Only a runtime that keeps its process open past a turn for
-   * such work has anything to report; the others leave this undefined and the
-   * running-sessions list falls back to chat runs alone.
+   * Sessions whose process is still up and taking input, whether or not their
+   * turn has ended, with the background tasks each still has outstanding
+   * (possibly none) and when the process started. Only a runtime that keeps
+   * its process open past a turn has anything to report; the others leave
+   * this undefined and the running-sessions list falls back to chat runs alone.
    */
-  listBackgroundWork?(): Array<{ sessionId: string; tasks: BackgroundTaskSummary[] }>;
+  listBackgroundWork?(): Array<{ sessionId: string; startedAt?: number; tasks: BackgroundTaskSummary[] }>;
+  /**
+   * Whether a message sent now would be taken by the session's live process.
+   * Runtimes that start a process per turn leave this undefined.
+   */
+  acceptsLiveInput?(sessionId: string): boolean;
+  /** Ends the session's live process and its background work. False when there is none. */
+  exit?(sessionId: string): boolean;
   /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already

@@ -112,3 +112,11 @@ test('cost and status commands report the same resolved model as /models', async
   assert.equal((cost.data as { model: string }).model, 'haiku');
   assert.equal((status.data as { model: string }).model, 'haiku');
 });
+
+test('/exit hands the client the exit action, which ends the process over the chat socket', async () => {
+  const result = await executeCommand('/exit', { provider: 'claude', sessionId: 'session-1' });
+
+  assert.equal(result.type, 'builtin');
+  assert.equal(result.action, 'exit');
+  assert.equal(result.command, '/exit');
+});

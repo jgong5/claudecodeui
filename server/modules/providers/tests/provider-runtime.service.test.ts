@@ -91,10 +91,18 @@ test('dispatches runs and aborts through the runtime owned by providerRegistry',
       assert.deepEqual(await context.getProviderModels(), { OPTIONS: [], DEFAULT: 'default-model' });
       assert.equal(context.normalizeMessage('hello', 'session-1')[0]?.provider, 'claude');
       assert.equal(await context.isProviderInstalled(), true);
-      return 'complete';
+      return { pushed: false };
     },
     async abort(sessionId) {
       calls.push(['abort', sessionId]);
+      return true;
+    },
+    acceptsLiveInput(sessionId) {
+      calls.push(['acceptsLiveInput', sessionId]);
+      return true;
+    },
+    exit(sessionId) {
+      calls.push(['exit', sessionId]);
       return true;
     },
   });
@@ -103,12 +111,23 @@ test('dispatches runs and aborts through the runtime owned by providerRegistry',
 
   assert.equal(service.hasRuntime('claude'), true);
   assert.equal(service.hasRuntime('unknown'), false);
-  assert.equal(await service.getRunner('claude')('hello', { model: 'sonnet' }, writer), 'complete');
+  assert.deepEqual(await service.getRunner('claude')('hello', { model: 'sonnet' }, writer), { pushed: false });
   assert.equal(await service.abort('claude', 'session-1'), true);
+  assert.equal(service.acceptsLiveInput('claude', 'session-1'), true);
+  assert.equal(service.exit('claude', 'session-1'), true);
   assert.deepEqual(calls, [
     ['run', 'hello', { model: 'sonnet' }, writer],
     ['abort', 'session-1'],
+    ['acceptsLiveInput', 'session-1'],
+    ['exit', 'session-1'],
   ]);
+});
+
+test('a runtime without live input or a process to end answers false', () => {
+  const service = createService([createProvider('codex', createRuntime())]);
+
+  assert.equal(service.acceptsLiveInput('codex', 'session-1'), false);
+  assert.equal(service.exit('codex', 'session-1'), false);
 });
 
 test('routes permission decisions through provider-owned runtime capabilities', () => {

@@ -284,6 +284,28 @@ test('running sessions list a session whose background work outlived its turn', 
   });
 });
 
+test('a process held with no tracked task is listed from its own start time', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('monitor-session', 'claude', '/tmp/running-project');
+
+    await withClaudeCliRegistry([], async () => await withProviders(
+      // Held only for a Monitor: no task to date it by, so the process start.
+      { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'monitor-session', startedAt: 1_234, tasks: [] }] } },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'monitor-session',
+          provider: 'claude',
+          startedAt: 1_234,
+          lastSeq: 0,
+          background: true,
+          canInterrupt: false,
+          tasks: [],
+        }]);
+      },
+    ));
+  });
+});
+
 test('running sessions carry their tasks on a chat run that is still going', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('busy-session', 'claude', '/tmp/running-project');

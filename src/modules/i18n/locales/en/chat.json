@@ -336,7 +336,8 @@
       "status": "Inspect runtime, version, provider, and environment status.",
       "memory": "Open the project CLAUDE.md memory file.",
       "config": "Open settings and configuration.",
-      "help": "Show command documentation and syntax."
+      "help": "Show command documentation and syntax.",
+      "exit": "End this session's Claude process, including its background work."
     },
     "modalMeta": {
       "helpEyebrow": "Command center",
