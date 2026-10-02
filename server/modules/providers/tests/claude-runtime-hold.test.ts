@@ -490,6 +490,12 @@ test('echoes of our own prompts are dropped, the CLI\'s own output still renders
       type: 'user', isReplay: true, uuid: 'cli-own-row', session_id: NATIVE_ID, parent_tool_use_id: null,
       message: { role: 'user', content: '<local-command-stdout>Context usage: 12%</local-command-stdout>' },
     });
+    // A background agent's report folded into a turn: history folds it into
+    // the agent's card, so it must not render as a block of its own live.
+    script.emit({
+      type: 'user', isReplay: true, uuid: 'cli-queued-row', session_id: NATIVE_ID, parent_tool_use_id: null,
+      message: { role: 'user', content: '<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_agent</tool-use-id>\n<status>completed</status>\n<result>AGENTDONE</result>\n</task-notification>' },
+    });
     await settle();
 
     const texts = sent.filter((message) => message.kind === 'text');
@@ -515,5 +521,14 @@ test('a tracked task that settles inside a pushed turn lets the process go', asy
     script.emit(result());
     await settle();
     assert.equal(script.released(), true, 'nothing tracked is left and nothing untracked was held');
+  });
+});
+
+test('/exit while the run is still setting up keeps the process from starting', async () => {
+  await withRun(async ({ script }) => {
+    assert.equal(exitClaudeSDKSession(SESSION_ID), true);
+    await settle();
+    assert.equal(script.queries.length, 0, 'no process spawned');
+    assert.deepEqual(listClaudeSDKBackgroundWork(), []);
   });
 });

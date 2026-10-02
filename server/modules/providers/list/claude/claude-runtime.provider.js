@@ -1347,7 +1347,18 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       }
 
       // The CLI took a message from stdin. The client already shows it.
-      if (message.type === 'user' && message.isReplay && controls.sentUuids.delete(message.uuid)) {
+      // Its own queued `<task-notification>` is echoed too when folded into a
+      // turn; the task events already report it, and history folds that row
+      // into the task's card. (Wake-up and cron prompts run as turns of their
+      // own and are not echoed; history hides them as meta rows.)
+      if (
+        message.type === 'user'
+        && message.isReplay
+        && (
+          controls.sentUuids.delete(message.uuid)
+          || String(message.message?.content).trimStart().startsWith('<task-notification>')
+        )
+      ) {
         controls.pendingPushes.delete(message.uuid);
         continue;
       }
@@ -1586,6 +1597,18 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 }
 
 /**
+ * Stops a run still setting up, which has no process yet: it is told not to
+ * start one, and its input is let go so a send racing in takes the session
+ * over instead of being pushed into a run that will never read it.
+ * @param {Object} session - activeSessions entry with no instance yet
+ */
+function cancelSetup(session) {
+  session.controls.cancelledBeforeStart = true;
+  session.controls.releaseInput();
+  session.controls.markAborted();
+}
+
+/**
  * Aborts an active SDK session
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session was aborted, false if not found
@@ -1597,10 +1620,8 @@ async function abortClaudeSDKSession(sessionId) {
     console.log(`Session ${sessionId} not found`);
     return false;
   }
-  // A run still setting up has no process yet: it is told not to start one.
   if (!session.instance) {
-    session.controls.cancelledBeforeStart = true;
-    session.controls.markAborted();
+    cancelSetup(session);
     return true;
   }
 
@@ -1642,8 +1663,12 @@ async function abortClaudeSDKSession(sessionId) {
  */
 function exitClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
-  if (!session?.instance) {
+  if (!session) {
     return false;
+  }
+  if (!session.instance) {
+    cancelSetup(session);
+    return true;
   }
   // Its run loop winds down silently; the caller reports the end.
   supersededInstances.add(session.instance);
