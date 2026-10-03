@@ -565,3 +565,36 @@ test('the Stop hook\'s scheduled prompts are listed with the held session', asyn
     assert.deepEqual(entry.crons, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
   });
 });
+
+test('scheduled prompts hold the process past the silence ceiling until the last is gone', async () => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  process.env.BG_WAIT_CEILING_MS = '1';
+  try {
+    await withRun(async ({ script }) => {
+      const stop = (crons: unknown[]) => {
+        const [stopHook] = (script.queries[0].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
+        return stopHook({ hook_event_name: 'Stop', session_crons: crons });
+      };
+      script.emit(init());
+      script.emit(toolUse('toolu_wake', 'ScheduleWakeup', { delaySeconds: 600, prompt: 'resume', reason: 'wait' }));
+      await settle();
+      await stop([{ id: 'w1', schedule: '45 10 * * *', recurring: false, prompt: 'resume' }]);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false, 'a 1ms ceiling would have let go of it');
+
+      // The wakeup fires as a turn of its own; its Stop hook lists nothing left.
+      script.emit(init());
+      await stop([]);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), true);
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
+});

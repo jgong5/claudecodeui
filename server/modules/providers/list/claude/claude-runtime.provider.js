@@ -72,7 +72,10 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // stdin immediately, and background work releases it as soon as it reports back. This
 // ceiling only catches background work that never reports at all, so an abandoned
 // session cannot leak a CLI process forever. The timer resets on every message, so it
-// measures silence, not total time.
+// measures silence, not total time. It is not armed while the session has scheduled
+// prompts (CronCreate, ScheduleWakeup): those live in the CLI process, fire long after
+// any silence, and the Stop hook says exactly when the last is gone — CronCreate jobs
+// expire on their own after 7 days.
 //
 // Set with the BG_WAIT_CEILING_MS env var (milliseconds). `0` turns the backstop off:
 // a held process then only exits once the main agent is idle and all its background
@@ -1460,6 +1463,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         && message.subtype === 'task_notification'
         && message.status === 'stopped'
         && !backgroundWork.hasOutstanding(sessionKey())
+        && backgroundWork.crons(sessionKey()).length === 0
       ) {
         heldForBackgroundWork = false;
         releasePromptStream();
@@ -1532,15 +1536,25 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         // ScheduleWakeup, CronCreate) — nothing else says when that is done.
         // Tracked tasks need no such help: the tracker knows exactly.
         const keepUntrackedHold = userTurn && heldForUntrackedWork;
+        // Scheduled prompts only fire while the process lives. The turn's
+        // Stop hook has just reported them, so this is current.
+        const holdForSchedule = backgroundWork.crons(sessionKey()).length > 0;
         const holdForTurn = (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding)
-          || keepUntrackedHold;
+          || keepUntrackedHold
+          || holdForSchedule;
         heldForUntrackedWork = (backgroundWorkPending && !sawTaskEventThisTurn) || keepUntrackedHold;
         userTurn = false;
         backgroundWorkPending = false;
         sawTaskEventThisTurn = false;
         if (holdForTurn) {
           heldForBackgroundWork = true;
-          scheduleRelease();
+          if (holdForSchedule) {
+            // No silence ceiling: a job due in hours is not work gone quiet.
+            clearTimeout(idleReleaseTimer);
+            idleReleaseTimer = null;
+          } else {
+            scheduleRelease();
+          }
         } else {
           // Either nothing was backgrounded, or the background work just
           // reported in — let the CLI exit now, as it always has.
