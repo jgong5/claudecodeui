@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 
-import '@/modules/i18n';
+import { i18n } from '@/modules/i18n';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
+import { describeSessionCron } from '@/modules/chat/utils/backgroundTasks';
 import { visibleCountToReveal } from '@/modules/chat/hooks/useChatSessionState';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import type { ChatMessage } from '@/shared/types';
@@ -475,4 +476,9 @@ describe('visibleCountToReveal', () => {
     // Row 106 of 942 needs 836 rows shown; a page more gives it some context above.
     expect(visibleCountToReveal(942, 106, 100)).toBe(836 + SESSION_MESSAGES_PAGE_SIZE);
   });
+});
+
+it('names a scheduled prompt in the language set, from a `t` bound to another namespace', () => {
+  const { kind } = describeSessionCron({ id: 'w1', schedule: '8 9 * * *', recurring: false, prompt: '' }, i18n.getFixedT('cs', 'chat'));
+  expect(kind).toBe('Naplánováno');
 });

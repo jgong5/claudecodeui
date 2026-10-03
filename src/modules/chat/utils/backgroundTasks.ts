@@ -153,7 +153,8 @@ export function describeSessionCron(cron: SessionCronSummary, t: TFunction): { k
   const [minute = '', hour = ''] = cron.schedule.trim().split(/\s+/);
   const pinned = !cron.recurring && /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour);
   return {
-    kind: cron.recurring ? t('workflow.scheduledRecurring', 'Cron') : t('workflow.scheduledOnce', 'Scheduled'),
+    // Qualified: the composer calls this with a `t` bound to `chat`.
+    kind: cron.recurring ? t('common:workflow.scheduledRecurring', 'Cron') : t('common:workflow.scheduledOnce', 'Scheduled'),
     when: pinned ? `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}` : cron.schedule,
   };
 }
