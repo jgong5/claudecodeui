@@ -250,6 +250,7 @@ export type SessionActivitySnapshot = {
   /** True when the server lists the session for its background tasks alone, with no chat run. */
   background?: boolean;
   tasks?: BackgroundTaskSummary[];
+  /** The prompts the session's live process has scheduled, as its last turn's Stop hook listed them. */
   crons?: SessionCronSummary[];
 };
 

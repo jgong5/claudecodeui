@@ -446,6 +446,7 @@ describe('the background tasks strip, for tasks only the activity map has a word
     const once = screen.getByTitle(/^Scheduled/);
     expect(cron.textContent).toBe('Cron*/5 * * * *check CI');
     expect(once.textContent).toBe('Scheduled09:08resume the loop');
+    expect(once.title).toBe('Scheduled · 09:08 (server time) · resume the loop');
     expect(screen.queryByRole('button')).toBeNull();
     expect(cron.className).not.toContain('opacity-50');
 

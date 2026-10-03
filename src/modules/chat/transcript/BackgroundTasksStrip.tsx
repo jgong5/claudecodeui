@@ -5,6 +5,7 @@ import { X } from 'lucide-react';
 
 import type { BackgroundTaskSummary, ChatMessage, SessionCronSummary } from '@/shared/types';
 import {
+  describeSessionCron,
   describeWorkflowAgent,
   findCurrentWorkflowAgent,
   listRunningBackgroundLaunches,
@@ -58,25 +59,6 @@ function readLaunchDescription(message: ChatMessage): string {
   return typeof script === 'string' ? parseWorkflowMeta(script).description ?? '' : '';
 }
 
-/** The chip label for a task the SDK reports as a `local_bash`: a Monitor watches, anything else is a command. */
-function bashTaskKind(toolName: string | undefined, t: TFunction): string {
-  return toolName === 'Monitor'
-    ? t('workflow.backgroundMonitor', 'Monitor')
-    : t('workflow.backgroundCommand', 'Command');
-}
-
-/**
- * When a one-shot scheduled prompt fires, as `HH:MM`: the CLI pins a
- * ScheduleWakeup (or a one-shot CronCreate) to a minute and hour, in the
- * server's local time. Undefined for a schedule not pinned that way.
- */
-function readOneShotTime(schedule: string): string | undefined {
-  const [minute = '', hour = ''] = schedule.trim().split(/\s+/);
-  return /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour)
-    ? `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
-    : undefined;
-}
-
 /** What one running task's chip says: its kind, its name, and how far it has got. */
 function describeTask(message: ChatMessage, t: TFunction) {
   const live = message.taskStatus;
@@ -85,9 +67,11 @@ function describeTask(message: ChatMessage, t: TFunction) {
     : message.subagent?.description || live?.description || '';
   const kind = message.toolName === 'Workflow'
     ? t('workflow.title', 'Workflow')
-    : message.toolName === 'Bash' || message.toolName === 'Monitor'
-      ? bashTaskKind(message.toolName, t)
-      : t('workflow.backgroundAgent', 'Agent');
+    : message.toolName === 'Monitor'
+      ? t('workflow.backgroundMonitor', 'Monitor')
+      : message.toolName === 'Bash'
+        ? t('workflow.backgroundCommand', 'Command')
+        : t('workflow.backgroundAgent', 'Agent');
 
   // A workflow reports on each agent it spawned — "2/6 agents · audit:sidebar"
   // says how many have finished and the one it is on. Short of that, its own
@@ -184,9 +168,11 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, s
       {fromMap.map((task) => {
         const kind = task.taskType === 'local_workflow'
           ? t('workflow.title', 'Workflow')
-          : task.taskType === 'local_bash'
-            ? bashTaskKind(task.toolName, t)
-            : t('workflow.backgroundAgent', 'Agent');
+          : task.toolName === 'Monitor'
+            ? t('workflow.backgroundMonitor', 'Monitor')
+            : task.taskType === 'local_bash'
+              ? t('workflow.backgroundCommand', 'Command')
+              : t('workflow.backgroundAgent', 'Agent');
         const name = task.workflowName ?? task.description;
         const label = (
           <>
@@ -231,12 +217,10 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, s
         );
       })}
       {scheduled.map((cron) => {
-        const at = cron.recurring ? undefined : readOneShotTime(cron.schedule);
-        const when = at ?? cron.schedule;
-        const kind = cron.recurring ? t('workflow.scheduledRecurring', 'Cron') : t('workflow.scheduledOnce', 'Scheduled');
+        const { kind, when } = describeSessionCron(cron, t);
         const title = [
           kind,
-          when,
+          `${when} (${t('workflow.serverTime', 'server time')})`,
           cron.prompt,
           schedulePaused ? t('workflow.schedulePaused', 'Waits while background tasks run') : '',
         ].filter(Boolean).join(' · ');

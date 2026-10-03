@@ -392,6 +392,7 @@
     "scheduledRecurring": "Cron",
     "scheduledOnce": "Scheduled",
     "schedulePaused": "Waits while background tasks run",
+    "serverTime": "server time",
     "stopTask": "Stop",
     "taskRowNotLoaded": "Launched earlier in this conversation; click to load it",
     "taskOfAgent": "Launched by one of this session's agents"

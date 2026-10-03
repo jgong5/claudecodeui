@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 
-import type { BackgroundTaskStatus, BackgroundTaskSummary, ChatMessage, WorkflowAgentProgress } from '@/shared/types';
+import type { BackgroundTaskStatus, BackgroundTaskSummary, ChatMessage, SessionCronSummary, WorkflowAgentProgress } from '@/shared/types';
 
 /**
  * Settles one background task's status from its two sources.
@@ -63,7 +63,7 @@ export function listRunningBackgroundLaunches(messages: ChatMessage[]): Backgrou
 }
 
 /** The SDK's task type for what a tool launched, when no live event has said. */
-const TASK_TYPE_BY_TOOL: Record<string, string> = { Workflow: 'local_workflow', Bash: 'local_bash' };
+const TASK_TYPE_BY_TOOL: Record<string, string> = { Workflow: 'local_workflow', Bash: 'local_bash', Monitor: 'local_bash' };
 
 /**
  * The background tasks a transcript still has running, in the shape the
@@ -141,6 +141,21 @@ export function describeWorkflowAgent(agent: Pick<WorkflowAgentProgress, 'index'
 export function ownBackgroundTasks(allTasks: BackgroundTaskSummary[]): BackgroundTaskSummary[] {
   const own = allTasks.filter((task) => !task.nested);
   return own.length > 0 ? own : allTasks;
+}
+
+/**
+ * One scheduled prompt's kind and when it fires: a recurring job's cron
+ * expression, or a one-shot's `HH:MM` — the CLI pins a ScheduleWakeup (or a
+ * one-shot CronCreate) to a minute and hour. Both are in the server's local
+ * time.
+ */
+export function describeSessionCron(cron: SessionCronSummary, t: TFunction): { kind: string; when: string } {
+  const [minute = '', hour = ''] = cron.schedule.trim().split(/\s+/);
+  const pinned = !cron.recurring && /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour);
+  return {
+    kind: cron.recurring ? t('workflow.scheduledRecurring', 'Cron') : t('workflow.scheduledOnce', 'Scheduled'),
+    when: pinned ? `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}` : cron.schedule,
+  };
 }
 
 /** One background task by kind and name: "Workflow audit", "Agent Survey the repo", "Command npm test", "Monitor CI log". */

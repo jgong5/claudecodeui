@@ -27,7 +27,7 @@ import {
   writeQueuedMessage,
 } from '@/shared/chatDrafts';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
-import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
+import { describeBackgroundTask, describeSessionCron, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
 import { useInputHistory } from '@/modules/chat/hooks/useInputHistory';
 import { useSlashCommands } from '@/modules/chat/hooks/useSlashCommands';
@@ -880,14 +880,19 @@ export function useChatComposerState({
 
       // An edit replaces the CLI process a session's background work runs
       // under: the agents, workflows and commands it still has going are
-      // stopped, or finish where nothing is listening. Sending is the user's
+      // stopped, or finish where nothing is listening, and the prompts it has
+      // scheduled are dropped with the process. Sending is the user's
       // call, but not one to make for them. A plain message is pushed into
       // the live process and leaves the work running.
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
       if (editingAnchorId && backgroundActivity?.background) {
-        const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
-          .map((task) => `• ${describeBackgroundTask(task, t)}`)
-          .join('\n');
+        const work = [
+          ...ownBackgroundTasks(backgroundActivity.tasks ?? []).map((task) => describeBackgroundTask(task, t)),
+          ...(backgroundActivity.crons ?? []).map((cron) => {
+            const { kind, when } = describeSessionCron(cron, t);
+            return [kind, when, cron.prompt].filter(Boolean).join(' ');
+          }),
+        ].map((line) => `• ${line}`).join('\n');
         const confirmed = window.confirm(t('claudeStatus.backgroundTask.sendAnyway', {
           work,
           defaultValue: 'This session still has background work running:\n{{work}}\n\nA new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?',

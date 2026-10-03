@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 
-import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SessionCronSummary, SyncProcessingSessions } from '@/shared/types';
+import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SyncProcessingSessions } from '@/shared/types';
 
 
 
@@ -18,19 +18,14 @@ const backgroundTasksKey = (tasks: readonly BackgroundTaskSummary[] | undefined)
     .map((task) => [task.taskId, task.toolUseId, task.taskType, task.description, task.workflowName ?? '', task.startedAt, task.nested ? 1 : 0, task.toolName ?? ''].join('\u0001'))
     .join('\u0000');
 
-/** The scheduled prompts as an identity, like `backgroundTasksKey`. */
-const sessionCronsKey = (crons: readonly SessionCronSummary[] | undefined): string =>
-  (crons ?? [])
-    .map((cron) => [cron.id, cron.schedule, cron.recurring ? 1 : 0, cron.prompt].join('\u0001'))
-    .join('\u0000');
-
 const sessionActivitiesMatch = (left: SessionActivity, right: SessionActivity): boolean =>
   left.statusText === right.statusText
   && left.canInterrupt === right.canInterrupt
   && left.startedAt === right.startedAt
   && Boolean(left.background) === Boolean(right.background)
   && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks)
-  && sessionCronsKey(left.crons) === sessionCronsKey(right.crons);
+  // parseSessionCrons rebuilds each entry with the same keys in the same order.
+  && JSON.stringify(left.crons ?? []) === JSON.stringify(right.crons ?? []);
 
 const sessionActivityMapsMatch = (
   left: ReadonlyMap<string, SessionActivity>,

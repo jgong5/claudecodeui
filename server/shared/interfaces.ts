@@ -61,9 +61,10 @@ export interface IProviderRuntime {
   /**
    * Sessions whose process is still up and taking input, whether or not their
    * turn has ended, with the background tasks each still has outstanding
-   * (possibly none), the prompts it has scheduled, and when the process started. Only a runtime that keeps
-   * its process open past a turn has anything to report; the others leave
-   * this undefined and the running-sessions list falls back to chat runs alone.
+   * (possibly none), the prompts it has scheduled, and when the process
+   * started. Only a runtime that keeps its process open past a turn has
+   * anything to report; the others leave this undefined and the
+   * running-sessions list falls back to chat runs alone.
    */
   listBackgroundWork?(): Array<{ sessionId: string; startedAt?: number; tasks: BackgroundTaskSummary[]; crons?: SessionCronSummary[] }>;
   /**
