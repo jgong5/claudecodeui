@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { notificationPreferencesDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
@@ -125,11 +126,11 @@ type RunContext = {
   context: ProviderRuntimeContext;
 };
 
-async function withRun(runTest: (run: RunContext) => Promise<void>): Promise<void> {
+async function withRun(runTest: (run: RunContext) => Promise<void>, userId: number | null = null): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
   const sent: NormalizedMessage[] = [];
-  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
+  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId };
   const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
   const context: ProviderRuntimeContext = {
     resolveProviderSessionId: () => null,
@@ -566,9 +567,12 @@ test('the Stop hook\'s scheduled prompts are listed with the held session', asyn
   });
 });
 
-test('scheduled prompts hold the process past the silence ceiling until the last is gone', async () => {
+test('scheduled prompts hold the process past the silence ceiling until the last is gone', async (t) => {
   const previous = process.env.BG_WAIT_CEILING_MS;
   process.env.BG_WAIT_CEILING_MS = '1';
+  // Every notification reads the user's preferences first; all disabled, so
+  // the count is the whole observation.
+  const notified = t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({ events: {}, channels: {} }) as never);
   try {
     await withRun(async ({ script }) => {
       const stop = (crons: unknown[]) => {
@@ -576,20 +580,31 @@ test('scheduled prompts hold the process past the silence ceiling until the last
         return stopHook({ hook_event_name: 'Stop', session_crons: crons });
       };
       script.emit(init());
-      script.emit(toolUse('toolu_wake', 'ScheduleWakeup', { delaySeconds: 600, prompt: 'resume', reason: 'wait' }));
+      script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
       await settle();
-      await stop([{ id: 'w1', schedule: '45 10 * * *', recurring: false, prompt: 'resume' }]);
+      const cron = { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' };
+      await stop([cron]);
       script.emit(result());
       await settle();
       assert.equal(script.released(), false, 'a 1ms ceiling would have let go of it');
+      assert.equal(notified.mock.callCount(), 1, 'the turn\'s own stop');
 
-      // The wakeup fires as a turn of its own; its Stop hook lists nothing left.
+      // The job fires as a turn of its own and stays scheduled: not done.
+      script.emit(init());
+      await stop([cron]);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false);
+      assert.equal(notified.mock.callCount(), 1, 'a recurring fire is no completion');
+
+      // A later fire deletes it; its Stop hook lists nothing left.
       script.emit(init());
       await stop([]);
       script.emit(result());
       await settle();
       assert.equal(script.released(), true);
-    });
+      assert.equal(notified.mock.callCount(), 2, 'the work is done');
+    }, 1);
   } finally {
     if (previous === undefined) {
       delete process.env.BG_WAIT_CEILING_MS;

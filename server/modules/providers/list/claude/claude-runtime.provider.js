@@ -1503,10 +1503,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
             sessionName: sessionSummary,
             stopReason: 'completed'
           });
-        } else if (heldForBackgroundWork && !stillOutstanding) {
+        } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
           // A result after the turn already reported complete means the work we
           // held the process open for has finished and pushed a follow-up turn
-          // — the last of it, when nothing else is still running.
+          // — the last of it, when nothing else is still running. A scheduled
+          // prompt's fire is such a turn too; only once none is left is the
+          // work done.
           notifyBackgroundWorkCompleted({
             userId: ws?.userId || null,
             provider: 'claude',
