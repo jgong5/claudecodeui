@@ -13,7 +13,7 @@ import {
   queryClaudeSDK,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
-import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
+import type { AnyRecord, NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
 /**
  * The runtime keeps the CLI's stdin open after a turn's `result` while the
@@ -42,6 +42,8 @@ type ScriptedQuery = {
   released: boolean;
   /** Control calls that reject, as a CLI refusing them would. */
   failing: Set<string>;
+  /** The options the runtime built the query with, hooks included. */
+  options: AnyRecord;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -65,14 +67,14 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     queries,
   };
 
-  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt, options }) => {
     const index = queries.length;
     if (!queues[index]) {
       queues.push([]);
       wakes.push(() => {});
     }
     const queue = queues[index];
-    const scripted: ScriptedQuery = { input: [], calls: [], released: false, failing: new Set() };
+    const scripted: ScriptedQuery = { input: [], calls: [], released: false, failing: new Set(), options };
     queries.push(scripted);
 
     void (async () => {
@@ -544,5 +546,22 @@ test('a second send before the process starts is queued behind the first prompt'
       script.queries[0].input.map((message) => (message.message as { content: string }).content),
       ['hello', 'and quickly this'],
     );
+  });
+});
+
+test('the Stop hook\'s scheduled prompts are listed with the held session', async () => {
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
+    script.emit(ack('toolu_cron', 'Scheduled recurring job c1', { id: 'c1', humanSchedule: 'Every 5 minutes', recurring: true, durable: false }));
+    await settle();
+    // The CLI runs its Stop hooks just before the turn's `result`.
+    const [stopHook] = (script.queries[0].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
+    await stopHook({ hook_event_name: 'Stop', session_crons: [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }] });
+    script.emit(result());
+    await settle();
+
+    const [entry] = listClaudeSDKBackgroundWork();
+    assert.deepEqual(entry.crons, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
   });
 });

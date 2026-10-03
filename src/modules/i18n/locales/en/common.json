@@ -388,6 +388,10 @@
     "backgroundTasks": "Background tasks",
     "backgroundAgent": "Agent",
     "backgroundCommand": "Command",
+    "backgroundMonitor": "Monitor",
+    "scheduledRecurring": "Cron",
+    "scheduledOnce": "Scheduled",
+    "schedulePaused": "Waits while background tasks run",
     "stopTask": "Stop",
     "taskRowNotLoaded": "Launched earlier in this conversation; click to load it",
     "taskOfAgent": "Launched by one of this session's agents"

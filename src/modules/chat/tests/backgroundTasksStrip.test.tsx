@@ -416,6 +416,52 @@ describe('the background tasks strip, for tasks only the activity map has a word
 
     expect(screen.getByRole('button').textContent).toBe('Workflowaudit· 0/1 agent · only');
   });
+
+  it('calls a Monitor a Monitor, though the SDK reports it as a command', () => {
+    render(
+      <BackgroundTasksStrip
+        sessionId="session-1"
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        onLoadAll={() => {}}
+        messages={[toolRow({ toolName: 'Monitor', toolId: 'toolu_monitor', taskStatus: { status: 'running', description: 'CI log' } })]}
+        tasks={[{ taskId: 'b1', toolUseId: 'toolu_unloaded', taskType: 'local_bash', description: 'tail the log', startedAt: 1, toolName: 'Monitor' }]}
+      />,
+    );
+
+    expect(screen.getAllByRole('button').filter((chip) => chip.getAttribute('aria-label') !== 'Stop').map((chip) => chip.textContent))
+      .toEqual(['MonitorCI log', 'Monitortail the log']);
+  });
+
+  it('lists scheduled prompts, dimmed while a background task holds them back', () => {
+    const crons = [
+      { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' },
+      { id: 'w1', schedule: '8 9 * * *', recurring: false, prompt: 'resume the loop' },
+    ];
+    const { rerender } = render(
+      <BackgroundTasksStrip sessionId="session-1" sendMessage={() => {}} onReveal={() => {}} onLoadAll={() => {}} messages={[]} crons={crons} />,
+    );
+
+    const cron = screen.getByTitle(/^Cron/);
+    const once = screen.getByTitle(/^Scheduled/);
+    expect(cron.textContent).toBe('Cron*/5 * * * *check CI');
+    expect(once.textContent).toBe('Scheduled09:08resume the loop');
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(cron.className).not.toContain('opacity-50');
+
+    rerender(
+      <BackgroundTasksStrip
+        sessionId="session-1"
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        onLoadAll={() => {}}
+        messages={[toolRow({ toolName: 'Bash', toolId: 'toolu_bash', taskStatus: { status: 'running', description: 'npm test' } })]}
+        crons={crons}
+      />,
+    );
+    expect(screen.getByTitle(/^Cron/).className).toContain('opacity-50');
+    expect(screen.getByTitle(/^Cron/).title).toContain('Waits while background tasks run');
+  });
 });
 
 describe('visibleCountToReveal', () => {

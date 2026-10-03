@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 
-import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SyncProcessingSessions } from '@/shared/types';
+import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SessionCronSummary, SyncProcessingSessions } from '@/shared/types';
 
 
 
@@ -15,7 +15,13 @@ const LOCAL_ACTIVITY_GRACE_MS = 10_000;
  */
 const backgroundTasksKey = (tasks: readonly BackgroundTaskSummary[] | undefined): string =>
   (tasks ?? [])
-    .map((task) => [task.taskId, task.toolUseId, task.taskType, task.description, task.workflowName ?? '', task.startedAt, task.nested ? 1 : 0].join('\u0001'))
+    .map((task) => [task.taskId, task.toolUseId, task.taskType, task.description, task.workflowName ?? '', task.startedAt, task.nested ? 1 : 0, task.toolName ?? ''].join('\u0001'))
+    .join('\u0000');
+
+/** The scheduled prompts as an identity, like `backgroundTasksKey`. */
+const sessionCronsKey = (crons: readonly SessionCronSummary[] | undefined): string =>
+  (crons ?? [])
+    .map((cron) => [cron.id, cron.schedule, cron.recurring ? 1 : 0, cron.prompt].join('\u0001'))
     .join('\u0000');
 
 const sessionActivitiesMatch = (left: SessionActivity, right: SessionActivity): boolean =>
@@ -23,7 +29,8 @@ const sessionActivitiesMatch = (left: SessionActivity, right: SessionActivity): 
   && left.canInterrupt === right.canInterrupt
   && left.startedAt === right.startedAt
   && Boolean(left.background) === Boolean(right.background)
-  && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks);
+  && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks)
+  && sessionCronsKey(left.crons) === sessionCronsKey(right.crons);
 
 const sessionActivityMapsMatch = (
   left: ReadonlyMap<string, SessionActivity>,
@@ -79,9 +86,10 @@ export function useSessionProtection() {
           activity?.statusText !== undefined ? activity.statusText : continuing?.statusText ?? null,
         canInterrupt: activity?.canInterrupt ?? continuing?.canInterrupt ?? true,
         startedAt: continuing?.startedAt ?? Date.now(),
-        // The tasks keep running under the new turn; they are reported again
-        // when it ends.
+        // The tasks and scheduled prompts outlive the new turn; they are
+        // reported again when it ends.
         ...(existing?.tasks ? { tasks: existing.tasks } : {}),
+        ...(existing?.crons ? { crons: existing.crons } : {}),
       };
 
       if (
@@ -128,7 +136,10 @@ export function useSessionProtection() {
   const markSessionBackground = useCallback<MarkSessionBackground>((sessionId, tasks) => {
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
-      if (tasks.length === 0) {
+      // Only the poll learns of scheduled prompts; until it says otherwise
+      // they keep the process, and so the session, busy.
+      const crons = existing?.crons?.length ? existing.crons : undefined;
+      if (tasks.length === 0 && !crons) {
         if (!existing) {
           return prev;
         }
@@ -140,9 +151,10 @@ export function useSessionProtection() {
       const next: SessionActivity = {
         statusText: null,
         canInterrupt: false,
-        startedAt: Math.min(...tasks.map((task) => task.startedAt)),
+        startedAt: tasks.length > 0 ? Math.min(...tasks.map((task) => task.startedAt)) : existing?.startedAt ?? Date.now(),
         background: true,
         tasks,
+        ...(crons ? { crons } : {}),
       };
       if (existing && sessionActivitiesMatch(existing, next)) {
         return prev;
@@ -195,6 +207,7 @@ export function useSessionProtection() {
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
           ...(snapshot.background ? { background: true } : {}),
           ...(snapshot.tasks ? { tasks: snapshot.tasks } : {}),
+          ...(snapshot.crons ? { crons: snapshot.crons } : {}),
         });
       }
 

@@ -8,7 +8,8 @@ import type { BackgroundTaskSummary,
   ProjectSession,
   LLMProvider,
   ProviderModelActions,
-  ProviderModelsDefinition } from '@/shared/types';
+  ProviderModelsDefinition,
+  SessionCronSummary } from '@/shared/types';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useLazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
@@ -61,6 +62,8 @@ type ChatMessagesPaneProps = {
   revealMessage: (message: ChatMessage) => void;
   /** The session's running background tasks from the activity map, for the strip to list ones whose rows are not loaded. */
   backgroundTasks?: BackgroundTaskSummary[];
+  /** The session's scheduled prompts from the activity map, for the strip to list. */
+  backgroundCrons?: SessionCronSummary[];
   /** The chat websocket's send, which the background-tasks strip stops a task over. */
   sendMessage: (message: unknown) => void;
   loadAllMessages: () => void;
@@ -129,6 +132,7 @@ function ChatMessagesPane({
   loadEarlierMessages,
   revealMessage,
   backgroundTasks,
+  backgroundCrons,
   sendMessage,
   loadAllMessages,
   allMessagesLoaded,
@@ -201,6 +205,7 @@ function ChatMessagesPane({
             <BackgroundTasksStrip
               messages={chatMessages}
               tasks={backgroundTasks}
+              crons={backgroundCrons}
               sessionId={selectedSession?.id || currentSessionId}
               sendMessage={sendMessage}
               onReveal={revealMessage}

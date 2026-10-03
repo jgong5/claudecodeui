@@ -416,6 +416,25 @@ export type BackgroundTaskSummary = {
    * it can still be stopped; not counted as the session's own work.
    */
   nested?: boolean;
+  /**
+   * The tool whose call started the task, when it was the session's own. Set
+   * so a Monitor can be told from a backgrounded Bash: both are `local_bash`.
+   */
+  toolName?: string;
+};
+
+/**
+ * One prompt the CLI has scheduled to run in a live session — a CronCreate
+ * job, or a ScheduleWakeup, which the CLI keeps as a one-shot job pinned to
+ * its minute — as the Stop hook's `session_crons` lists it at the end of each
+ * turn. `schedule` is a 5-field cron expression in the server's local time.
+ * The job lives in the CLI process and dies with it.
+ */
+export type SessionCronSummary = {
+  id: string;
+  schedule: string;
+  recurring: boolean;
+  prompt: string;
 };
 
 /**

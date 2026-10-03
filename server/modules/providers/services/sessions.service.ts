@@ -13,6 +13,7 @@ import type {
   FetchHistoryResult,
   LLMProvider,
   NormalizedMessage,
+  SessionCronSummary,
   WorkflowAgentActivity,
 } from '@/shared/types.js';
 import { AppError, sliceTailPage } from '@/shared/utils.js';
@@ -25,7 +26,7 @@ import { AppError, sliceTailPage } from '@/shared/utils.js';
  * `background: true` and `canInterrupt: false`: the composer stays usable
  * (the runtime accepts a new turn while the work runs) and there is no run to
  * abort — a task is stopped by id through `chat.stop-task` instead. `tasks`
- * rides along on both kinds whenever the session has any.
+ * and `crons` ride along on both kinds whenever the session has any.
  *
  * A turn driven outside CloudCLI — the Claude CLI in the Shell view, or a
  * terminal the user opened themselves — is listed the same way, with
@@ -41,6 +42,7 @@ type RunningSessionEntry = {
   canInterrupt?: false;
   statusText?: string;
   tasks?: BackgroundTaskSummary[];
+  crons?: SessionCronSummary[];
 };
 
 type CreateAppSessionResult = {
@@ -165,16 +167,19 @@ export const sessionsService = {
     const runningById = new Map(entries.map((entry) => [entry.sessionId, entry]));
 
     for (const provider of providerRegistry.listProviders()) {
-      for (const { sessionId, startedAt, tasks } of provider.runtime.listBackgroundWork?.() ?? []) {
+      for (const { sessionId, startedAt, tasks, crons } of provider.runtime.listBackgroundWork?.() ?? []) {
         const running = runningById.get(sessionId);
         if (running) {
           running.tasks = tasks;
+          if (crons) {
+            running.crons = crons;
+          }
           continue;
         }
         entries.push({
           sessionId,
           provider: provider.id,
-          // A process held with no tracked task (Monitor, ScheduleWakeup)
+          // A process held with no tracked task (ScheduleWakeup, CronCreate)
           // dates from the process instead.
           startedAt: tasks.length > 0
             ? Math.min(...tasks.map((task) => task.startedAt))
@@ -185,6 +190,7 @@ export const sessionsService = {
           background: true,
           canInterrupt: false,
           tasks,
+          ...(crons ? { crons } : {}),
         });
       }
     }

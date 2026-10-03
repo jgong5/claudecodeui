@@ -169,6 +169,21 @@ export type BackgroundTaskSummary = {
    * it can still be stopped; not counted as the session's own work.
    */
   nested?: boolean;
+  /** The tool that started a task of the session's own; what tells a Monitor from a backgrounded command, both `local_bash`. */
+  toolName?: string;
+};
+
+/**
+ * A prompt the CLI will run in a live session later — a CronCreate job, or a
+ * ScheduleWakeup kept as a one-shot job — as of the session's last turn.
+ * `schedule` is a 5-field cron expression in the server's local time. It
+ * cannot be stopped from here: only the model's CronDelete removes it.
+ */
+export type SessionCronSummary = {
+  id: string;
+  schedule: string;
+  recurring: boolean;
+  prompt: string;
 };
 
 /** What a busy session is doing, as shown by the activity indicator: producing a response, or only running background tasks. */
@@ -190,6 +205,8 @@ export type SessionActivity = {
   background?: boolean;
   /** The background tasks the session still has running, with or without a response in flight. */
   tasks?: BackgroundTaskSummary[];
+  /** The prompts the session's process has scheduled, from the running-sessions poll. */
+  crons?: SessionCronSummary[];
 };
 
 /** Every busy session, keyed by session id. Read it to tell whether a session is busy; check `background` to tell how. */
@@ -207,7 +224,7 @@ export type MarkSessionIdle = (
   opts?: { ifStartedBefore?: number },
 ) => void;
 
-/** Records the background tasks a session still has once its turn ended; an empty list marks it idle. */
+/** Records the background tasks a session still has once its turn ended; an empty list marks it idle unless the poll last reported scheduled prompts for it. */
 export type MarkSessionBackground = (
   sessionId: string,
   tasks: BackgroundTaskSummary[],
@@ -233,6 +250,7 @@ export type SessionActivitySnapshot = {
   /** True when the server lists the session for its background tasks alone, with no chat run. */
   background?: boolean;
   tasks?: BackgroundTaskSummary[];
+  crons?: SessionCronSummary[];
 };
 
 // ---------------------------

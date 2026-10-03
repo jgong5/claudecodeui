@@ -286,20 +286,22 @@ test('running sessions list a session whose background work outlived its turn', 
 
 test('a process held with no tracked task is listed from its own start time', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
-    sessionsDb.createAppSession('monitor-session', 'claude', '/tmp/running-project');
+    sessionsDb.createAppSession('cron-session', 'claude', '/tmp/running-project');
+    const crons = [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }];
 
     await withClaudeCliRegistry([], async () => await withProviders(
-      // Held only for a Monitor: no task to date it by, so the process start.
-      { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'monitor-session', startedAt: 1_234, tasks: [] }] } },
+      // Held only for a cron job: no task to date it by, so the process start.
+      { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'cron-session', startedAt: 1_234, tasks: [], crons }] } },
       async () => {
         assert.deepEqual(await sessionsService.listRunningSessions(), [{
-          sessionId: 'monitor-session',
+          sessionId: 'cron-session',
           provider: 'claude',
           startedAt: 1_234,
           lastSeq: 0,
           background: true,
           canInterrupt: false,
           tasks: [],
+          crons,
         }]);
       },
     ));

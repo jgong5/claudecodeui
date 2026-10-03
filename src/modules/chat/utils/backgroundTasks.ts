@@ -87,6 +87,7 @@ export function collectRunningBackgroundTasks(messages: ChatMessage[]): Backgrou
       taskType: live?.taskType ?? TASK_TYPE_BY_TOOL[message.toolName ?? ''] ?? 'local_agent',
       description: live?.description ?? message.subagent?.description ?? '',
       ...(workflowName ? { workflowName } : {}),
+      ...(message.toolName ? { toolName: message.toolName } : {}),
       // The call is the launch: the SDK's start event follows it within the
       // same second.
       startedAt: new Date(message.timestamp).getTime(),
@@ -142,8 +143,11 @@ export function ownBackgroundTasks(allTasks: BackgroundTaskSummary[]): Backgroun
   return own.length > 0 ? own : allTasks;
 }
 
-/** One background task by kind and name: "Workflow audit", "Agent Survey the repo", "Command npm test". */
+/** One background task by kind and name: "Workflow audit", "Agent Survey the repo", "Command npm test", "Monitor CI log". */
 export function describeBackgroundTask(task: BackgroundTaskSummary, t: TFunction): string {
+  if (task.toolName === 'Monitor') {
+    return t('claudeStatus.backgroundTask.monitor', { description: task.description, defaultValue: 'Monitor {{description}}' });
+  }
   switch (task.taskType) {
     case 'local_workflow':
       return t('claudeStatus.backgroundTask.workflow', { name: task.workflowName ?? task.description, defaultValue: 'Workflow {{name}}' });

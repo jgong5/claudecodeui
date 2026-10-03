@@ -10,7 +10,7 @@ import type { ReactNode } from 'react';
 import {
   useSessionProtection,
 } from '@/shared/hooks/useSessionProtection';
-import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SyncProcessingSessions } from '@/shared/types';
+import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionCronSummary, SyncProcessingSessions } from '@/shared/types';
 import { api } from '@/shared/api';
 
 type RunningSessionApiItem = {
@@ -20,6 +20,7 @@ type RunningSessionApiItem = {
   canInterrupt?: unknown;
   background?: unknown;
   tasks?: unknown;
+  crons?: unknown;
 };
 
 type RunningSessionsApiPayload = {
@@ -115,9 +116,24 @@ const parseBackgroundTasks = (value: unknown): BackgroundTaskSummary[] | undefin
       ...(typeof task.workflowName === 'string' ? { workflowName: task.workflowName } : {}),
       startedAt: task.startedAt,
       ...(task.nested === true ? { nested: true } : {}),
+      ...(typeof task.toolName === 'string' ? { toolName: task.toolName } : {}),
     });
   }
   return tasks;
+};
+
+/** The poll's scheduled prompts, dropping any entry not in the shape the strip reads. */
+const parseSessionCrons = (value: unknown): SessionCronSummary[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value
+    .filter((cron): cron is SessionCronSummary =>
+      typeof cron?.id === 'string'
+      && typeof cron.schedule === 'string'
+      && typeof cron.recurring === 'boolean'
+      && typeof cron.prompt === 'string')
+    .map(({ id, schedule, recurring, prompt }) => ({ id, schedule, recurring, prompt }));
 };
 
 /** Mounted by the project-workspace route; tracks which sessions are busy — producing a response or running background tasks — so chat, sidebar and project-workspace agree on session activity. */
@@ -156,6 +172,7 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
               canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
               background: session.background === true,
               tasks: parseBackgroundTasks(session.tasks),
+              crons: parseSessionCrons(session.crons),
             };
           })
           .filter((session): session is NonNullable<typeof session> => Boolean(session)),

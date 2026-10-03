@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { X } from 'lucide-react';
 
-import type { BackgroundTaskSummary, ChatMessage } from '@/shared/types';
+import type { BackgroundTaskSummary, ChatMessage, SessionCronSummary } from '@/shared/types';
 import {
   describeWorkflowAgent,
   findCurrentWorkflowAgent,
@@ -25,6 +25,8 @@ type BackgroundTasksStripProps = {
    * row to draw from and is listed from here, so it can still be stopped.
    */
   tasks?: BackgroundTaskSummary[];
+  /** The prompts the session's process has scheduled — CronCreate jobs and ScheduleWakeups — as the running-sessions poll last reported them. */
+  crons?: SessionCronSummary[];
   /** The session the tasks belong to, which `chat.stop-task` names; null before one exists. */
   sessionId: string | null;
   /** The chat websocket's send, for stopping a task. */
@@ -56,6 +58,25 @@ function readLaunchDescription(message: ChatMessage): string {
   return typeof script === 'string' ? parseWorkflowMeta(script).description ?? '' : '';
 }
 
+/** The chip label for a task the SDK reports as a `local_bash`: a Monitor watches, anything else is a command. */
+function bashTaskKind(toolName: string | undefined, t: TFunction): string {
+  return toolName === 'Monitor'
+    ? t('workflow.backgroundMonitor', 'Monitor')
+    : t('workflow.backgroundCommand', 'Command');
+}
+
+/**
+ * When a one-shot scheduled prompt fires, as `HH:MM`: the CLI pins a
+ * ScheduleWakeup (or a one-shot CronCreate) to a minute and hour, in the
+ * server's local time. Undefined for a schedule not pinned that way.
+ */
+function readOneShotTime(schedule: string): string | undefined {
+  const [minute = '', hour = ''] = schedule.trim().split(/\s+/);
+  return /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour)
+    ? `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+    : undefined;
+}
+
 /** What one running task's chip says: its kind, its name, and how far it has got. */
 function describeTask(message: ChatMessage, t: TFunction) {
   const live = message.taskStatus;
@@ -64,8 +85,8 @@ function describeTask(message: ChatMessage, t: TFunction) {
     : message.subagent?.description || live?.description || '';
   const kind = message.toolName === 'Workflow'
     ? t('workflow.title', 'Workflow')
-    : message.toolName === 'Bash'
-      ? t('workflow.backgroundCommand', 'Command')
+    : message.toolName === 'Bash' || message.toolName === 'Monitor'
+      ? bashTaskKind(message.toolName, t)
       : t('workflow.backgroundAgent', 'Agent');
 
   // A workflow reports on each agent it spawned — "2/6 agents · audit:sidebar"
@@ -97,11 +118,12 @@ function describeTask(message: ChatMessage, t: TFunction) {
 
 /**
  * Rendered by chat's ChatMessagesPane above the transcript: one chip per
- * background task — workflow, agent or command — that is still running, each
- * scrolling to its card when clicked and stoppable from its ✕. Renders
+ * background task — workflow, agent, command or monitor — that is still
+ * running, each scrolling to its card when clicked and stoppable from its ✕,
+ * then one per scheduled prompt, which only the model can cancel. Renders
  * nothing while nothing runs, which is most of the time.
  */
-export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
+export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
   const { t } = useTranslation();
   const running = listRunningBackgroundLaunches(messages);
   // A loaded row that has a word on its task — settled or not — is the word;
@@ -113,9 +135,14 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
   );
   const fromMap = ownBackgroundTasks(tasks ?? []).filter((task) => !settledToolIds.has(task.toolUseId));
 
-  if (running.length === 0 && fromMap.length === 0) {
+  const scheduled = crons ?? [];
+
+  if (running.length === 0 && fromMap.length === 0 && scheduled.length === 0) {
     return null;
   }
+  // The CLI does not check its schedule while any background task runs, so a
+  // prompt due meanwhile waits for the last one to finish.
+  const schedulePaused = running.length > 0 || fromMap.length > 0;
 
   return (
     <div
@@ -158,7 +185,7 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
         const kind = task.taskType === 'local_workflow'
           ? t('workflow.title', 'Workflow')
           : task.taskType === 'local_bash'
-            ? t('workflow.backgroundCommand', 'Command')
+            ? bashTaskKind(task.toolName, t)
             : t('workflow.backgroundAgent', 'Agent');
         const name = task.workflowName ?? task.description;
         const label = (
@@ -200,6 +227,29 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
                 <X className="h-3 w-3" />
               </button>
             )}
+          </span>
+        );
+      })}
+      {scheduled.map((cron) => {
+        const at = cron.recurring ? undefined : readOneShotTime(cron.schedule);
+        const when = at ?? cron.schedule;
+        const kind = cron.recurring ? t('workflow.scheduledRecurring', 'Cron') : t('workflow.scheduledOnce', 'Scheduled');
+        const title = [
+          kind,
+          when,
+          cron.prompt,
+          schedulePaused ? t('workflow.schedulePaused', 'Waits while background tasks run') : '',
+        ].filter(Boolean).join(' · ');
+        return (
+          <span
+            key={cron.id}
+            title={title}
+            className={`flex min-w-0 max-w-xs items-center gap-1.5 rounded px-1.5 py-0.5 ${schedulePaused ? 'opacity-50' : ''}`}
+          >
+            <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-sky-500 dark:bg-sky-400" />
+            <span className="flex-shrink-0 font-medium text-foreground">{kind}</span>
+            <span className="flex-shrink-0 font-mono">{when}</span>
+            {cron.prompt && <span className="min-w-0 truncate">{cron.prompt}</span>}
           </span>
         );
       })}

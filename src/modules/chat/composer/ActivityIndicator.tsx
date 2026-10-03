@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
 import { Shimmer } from '@/shared/ui';
-import type { BackgroundTaskSummary, SessionActivity } from '@/shared/types';
+import type { BackgroundTaskSummary, SessionActivity, SessionCronSummary } from '@/shared/types';
 import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
 
 type ActivityIndicatorProps = {
@@ -23,9 +23,12 @@ const ACTION_KEYS = [
 const DEFAULT_ACTION_WORDS = ['Thinking', 'Processing', 'Analyzing', 'Working', 'Computing', 'Reasoning'];
 const EXIT_ANIMATION_MS = 220;
 
-/** What the background work is: the one task by kind and name, or how many when there are several. */
-function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], t: TFunction): string {
+/** What the background work is: the one task by kind and name, or how many when there are several — or, with none, how many prompts are scheduled. */
+function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], crons: SessionCronSummary[], t: TFunction): string {
   const tasks = ownBackgroundTasks(allTasks);
+  if (tasks.length === 0 && crons.length > 0) {
+    return t('claudeStatus.backgroundTask.scheduled', { count: crons.length, defaultValue: '{{count}} scheduled' });
+  }
   return tasks.length === 1
     ? describeBackgroundTask(tasks[0], t)
     : t('claudeStatus.backgroundTask.count', { count: tasks.length, defaultValue: '{{count}} tasks' });
@@ -86,7 +89,7 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
     ? t('claudeStatus.backgroundWork', 'Background work')
     : (renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
       .replace(/\.+$/, '');
-  const detail = isBackground ? describeBackgroundTasks(renderedActivity.tasks ?? [], t) : '';
+  const detail = isBackground ? describeBackgroundTasks(renderedActivity.tasks ?? [], renderedActivity.crons ?? [], t) : '';
 
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
