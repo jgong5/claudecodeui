@@ -72,7 +72,10 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // stdin immediately, and background work releases it as soon as it reports back. This
 // ceiling only catches background work that never reports at all, so an abandoned
 // session cannot leak a CLI process forever. The timer resets on every message, so it
-// measures silence, not total time.
+// measures silence, not total time. It is not armed while the session has scheduled
+// prompts (CronCreate, ScheduleWakeup): those live in the CLI process, fire long after
+// any silence, and the Stop hook says exactly when the last is gone — CronCreate jobs
+// expire on their own after 7 days.
 //
 // Set with the BG_WAIT_CEILING_MS env var (milliseconds). `0` turns the backstop off:
 // a held process then only exits once the main agent is idle and all its background
@@ -1010,14 +1013,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     }
   };
 
-  // Arms (or re-arms) the idle countdown that eventually closes stdin.
+  // Arms (or re-arms) the idle countdown that eventually closes stdin. Not
+  // while the session has scheduled prompts: a job due in hours is not work
+  // gone quiet.
   const scheduleRelease = () => {
     if (idleReleaseTimer) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
     const ceilingMs = readBgWaitCeilingMs();
-    if (ceilingMs === 0) {
+    if (ceilingMs === 0 || backgroundWork.crons(sessionKey()).length > 0) {
       return;
     }
     idleReleaseTimer = setTimeout(() => {
@@ -1453,13 +1458,17 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       // nothing will ever push the `result` the release below waits for, and
       // the process would sit until the idle ceiling. Release it here. A
       // completed task is different: the CLI relays its result in a turn of
-      // its own, which closing stdin now would cut short.
+      // its own, which closing stdin now would cut short. Nor while this turn
+      // has started untracked work (a CronCreate, say): only its result's
+      // Stop snapshot says whether that needs the process.
       if (
         heldForBackgroundWork
+        && !backgroundWorkPending
         && message.type === 'system'
         && message.subtype === 'task_notification'
         && message.status === 'stopped'
         && !backgroundWork.hasOutstanding(sessionKey())
+        && backgroundWork.crons(sessionKey()).length === 0
       ) {
         heldForBackgroundWork = false;
         releasePromptStream();
@@ -1499,10 +1508,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
             sessionName: sessionSummary,
             stopReason: 'completed'
           });
-        } else if (heldForBackgroundWork && !stillOutstanding) {
+        } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
           // A result after the turn already reported complete means the work we
           // held the process open for has finished and pushed a follow-up turn
-          // — the last of it, when nothing else is still running.
+          // — the last of it, when nothing else is still running. A scheduled
+          // prompt's fire is such a turn too; only once none is left is the
+          // work done.
           notifyBackgroundWorkCompleted({
             userId: ws?.userId || null,
             provider: 'claude',
@@ -1532,8 +1543,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         // ScheduleWakeup, CronCreate) — nothing else says when that is done.
         // Tracked tasks need no such help: the tracker knows exactly.
         const keepUntrackedHold = userTurn && heldForUntrackedWork;
+        // Scheduled prompts only fire while the process lives. The turn's
+        // Stop hook has just reported them, so this is current.
+        const holdForSchedule = backgroundWork.crons(sessionKey()).length > 0;
         const holdForTurn = (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding)
-          || keepUntrackedHold;
+          || keepUntrackedHold
+          || holdForSchedule;
         heldForUntrackedWork = (backgroundWorkPending && !sawTaskEventThisTurn) || keepUntrackedHold;
         userTurn = false;
         backgroundWorkPending = false;

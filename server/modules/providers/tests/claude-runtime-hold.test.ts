@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { notificationPreferencesDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
@@ -125,11 +126,11 @@ type RunContext = {
   context: ProviderRuntimeContext;
 };
 
-async function withRun(runTest: (run: RunContext) => Promise<void>): Promise<void> {
+async function withRun(runTest: (run: RunContext) => Promise<void>, userId: number | null = null): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
   const sent: NormalizedMessage[] = [];
-  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
+  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId };
   const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
   const context: ProviderRuntimeContext = {
     resolveProviderSessionId: () => null,
@@ -549,19 +550,121 @@ test('a second send before the process starts is queued behind the first prompt'
   });
 });
 
+/** Runs the Stop hook the runtime registered, as the CLI does just before a turn's `result`. */
+const runStopHook = (script: Scripted, crons: unknown[]) => {
+  const [stopHook] = (script.queries[0].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
+  return stopHook({ hook_event_name: 'Stop', session_crons: crons });
+};
+
 test('the Stop hook\'s scheduled prompts are listed with the held session', async () => {
   await withRun(async ({ script }) => {
     script.emit(init());
     script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
     script.emit(ack('toolu_cron', 'Scheduled recurring job c1', { id: 'c1', humanSchedule: 'Every 5 minutes', recurring: true, durable: false }));
     await settle();
-    // The CLI runs its Stop hooks just before the turn's `result`.
-    const [stopHook] = (script.queries[0].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
-    await stopHook({ hook_event_name: 'Stop', session_crons: [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }] });
+    await runStopHook(script, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
     script.emit(result());
     await settle();
 
     const [entry] = listClaudeSDKBackgroundWork();
     assert.deepEqual(entry.crons, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
   });
+});
+
+test('scheduled prompts hold the process past the silence ceiling until the last is gone', async (t) => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  process.env.BG_WAIT_CEILING_MS = '1';
+  // Every notification reads the user's preferences first; all disabled, so
+  // the count is the whole observation.
+  const notified = t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({ events: {}, channels: {} }) as never);
+  try {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
+      await settle();
+      const cron = { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' };
+      await runStopHook(script, [cron]);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false, 'a 1ms ceiling would have let go of it');
+      assert.equal(notified.mock.callCount(), 1, 'the turn\'s own stop');
+
+      // The job fires as a turn of its own and stays scheduled: not done.
+      script.emit(init());
+      await runStopHook(script, [cron]);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false);
+      assert.equal(notified.mock.callCount(), 1, 'a recurring fire is no completion');
+
+      // A later fire deletes it; its Stop hook lists nothing left.
+      script.emit(init());
+      await runStopHook(script, []);
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), true);
+      assert.equal(notified.mock.callCount(), 2, 'the work is done');
+    }, 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
+});
+
+test('stopping the last task does not let go of a turn that has just scheduled a prompt', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    script.emit(init());
+    script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+    script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+    script.emit(result());
+    await settle();
+
+    // The next turn schedules a job, and the workflow is stopped before the
+    // turn's Stop hook has reported the job.
+    send(run, 'check CI every 5 minutes', createWriter().writer);
+    await settle();
+    script.emit(replay(lastInput(script).uuid));
+    script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
+    script.emit(taskNotification('wf1', 'toolu_wf', 'stopped'));
+    await settle();
+    assert.equal(script.released(), false, 'the turn\'s Stop hook decides');
+
+    await runStopHook(script, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), false, 'held for the job');
+  });
+});
+
+test('a result while a pushed message is queued arms no ceiling over scheduled prompts', async () => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  process.env.BG_WAIT_CEILING_MS = '1';
+  try {
+    await withRun(async (run) => {
+      const { script } = run;
+      script.emit(init());
+      script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '*/5 * * * *', prompt: 'check CI', recurring: true }));
+      await settle();
+      await runStopHook(script, [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }]);
+      script.emit(result());
+      await settle();
+
+      // A fire's turn ends while the user's message waits to run after it.
+      send(run, 'and then?', createWriter().writer);
+      await settle();
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false, 'a 1ms ceiling would have let go of it');
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
 });
