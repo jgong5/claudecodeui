@@ -1013,14 +1013,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     }
   };
 
-  // Arms (or re-arms) the idle countdown that eventually closes stdin.
+  // Arms (or re-arms) the idle countdown that eventually closes stdin. Not
+  // while the session has scheduled prompts: a job due in hours is not work
+  // gone quiet.
   const scheduleRelease = () => {
     if (idleReleaseTimer) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
     const ceilingMs = readBgWaitCeilingMs();
-    if (ceilingMs === 0) {
+    if (ceilingMs === 0 || backgroundWork.crons(sessionKey()).length > 0) {
       return;
     }
     idleReleaseTimer = setTimeout(() => {
@@ -1456,9 +1458,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       // nothing will ever push the `result` the release below waits for, and
       // the process would sit until the idle ceiling. Release it here. A
       // completed task is different: the CLI relays its result in a turn of
-      // its own, which closing stdin now would cut short.
+      // its own, which closing stdin now would cut short. Nor while this turn
+      // has started untracked work (a CronCreate, say): only its result's
+      // Stop snapshot says whether that needs the process.
       if (
         heldForBackgroundWork
+        && !backgroundWorkPending
         && message.type === 'system'
         && message.subtype === 'task_notification'
         && message.status === 'stopped'
@@ -1550,13 +1555,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         sawTaskEventThisTurn = false;
         if (holdForTurn) {
           heldForBackgroundWork = true;
-          if (holdForSchedule) {
-            // No silence ceiling: a job due in hours is not work gone quiet.
-            clearTimeout(idleReleaseTimer);
-            idleReleaseTimer = null;
-          } else {
-            scheduleRelease();
-          }
+          scheduleRelease();
         } else {
           // Either nothing was backgrounded, or the background work just
           // reported in — let the CLI exit now, as it always has.
