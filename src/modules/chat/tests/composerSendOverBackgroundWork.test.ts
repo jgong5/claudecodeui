@@ -131,6 +131,24 @@ test('an edit on a session with background work asks first, naming the session\'
   assert.equal(view.result.current.input, 'hello', 'and the draft stays in the composer');
 });
 
+test('an edit on a session held only by scheduled prompts names them, since the edit drops them', async () => {
+  confirm.mockReturnValue(false);
+  await submit(new Map([['session-1', {
+    statusText: null,
+    canInterrupt: false,
+    startedAt: 1,
+    background: true,
+    tasks: [],
+    crons: [
+      { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' },
+      { id: 'c2', schedule: '7 9 3 10 *', recurring: false, prompt: '' },
+    ],
+  }]]), { edit: true });
+
+  assert.equal(confirm.mock.calls.length, 1);
+  assert.match(String(confirm.mock.calls[0]?.[0]), /:\n• Cron \*\/5 \* \* \* \* check CI\n• Scheduled 09:07\n/);
+});
+
 test('/exit asks the chat socket to end the session\'s process', async () => {
   const { sent, sends } = await submit(new Map(), { content: '/exit' });
 

@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 
-import '@/modules/i18n';
+import { i18n } from '@/modules/i18n';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
+import { describeSessionCron } from '@/modules/chat/utils/backgroundTasks';
 import { visibleCountToReveal } from '@/modules/chat/hooks/useChatSessionState';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import type { ChatMessage } from '@/shared/types';
@@ -416,6 +417,53 @@ describe('the background tasks strip, for tasks only the activity map has a word
 
     expect(screen.getByRole('button').textContent).toBe('Workflowaudit· 0/1 agent · only');
   });
+
+  it('calls a Monitor a Monitor, though the SDK reports it as a command', () => {
+    render(
+      <BackgroundTasksStrip
+        sessionId="session-1"
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        onLoadAll={() => {}}
+        messages={[toolRow({ toolName: 'Monitor', toolId: 'toolu_monitor', taskStatus: { status: 'running', description: 'CI log' } })]}
+        tasks={[{ taskId: 'b1', toolUseId: 'toolu_unloaded', taskType: 'local_bash', description: 'tail the log', startedAt: 1, toolName: 'Monitor' }]}
+      />,
+    );
+
+    expect(screen.getAllByRole('button').filter((chip) => chip.getAttribute('aria-label') !== 'Stop').map((chip) => chip.textContent))
+      .toEqual(['MonitorCI log', 'Monitortail the log']);
+  });
+
+  it('lists scheduled prompts, dimmed while a background task holds them back', () => {
+    const crons = [
+      { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' },
+      { id: 'w1', schedule: '8 9 * * *', recurring: false, prompt: 'resume the loop' },
+    ];
+    const { rerender } = render(
+      <BackgroundTasksStrip sessionId="session-1" sendMessage={() => {}} onReveal={() => {}} onLoadAll={() => {}} messages={[]} crons={crons} />,
+    );
+
+    const cron = screen.getByTitle(/^Cron/);
+    const once = screen.getByTitle(/^Scheduled/);
+    expect(cron.textContent).toBe('Cron*/5 * * * *check CI');
+    expect(once.textContent).toBe('Scheduled09:08resume the loop');
+    expect(once.title).toBe('Scheduled · 09:08 (server time) · resume the loop');
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(cron.className).not.toContain('opacity-50');
+
+    rerender(
+      <BackgroundTasksStrip
+        sessionId="session-1"
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        onLoadAll={() => {}}
+        messages={[toolRow({ toolName: 'Bash', toolId: 'toolu_bash', taskStatus: { status: 'running', description: 'npm test' } })]}
+        crons={crons}
+      />,
+    );
+    expect(screen.getByTitle(/^Cron/).className).toContain('opacity-50');
+    expect(screen.getByTitle(/^Cron/).title).toContain('Waits while background tasks run');
+  });
 });
 
 describe('visibleCountToReveal', () => {
@@ -428,4 +476,9 @@ describe('visibleCountToReveal', () => {
     // Row 106 of 942 needs 836 rows shown; a page more gives it some context above.
     expect(visibleCountToReveal(942, 106, 100)).toBe(836 + SESSION_MESSAGES_PAGE_SIZE);
   });
+});
+
+it('names a scheduled prompt in the language set, from a `t` bound to another namespace', () => {
+  const { kind } = describeSessionCron({ id: 'w1', schedule: '8 9 * * *', recurring: false, prompt: '' }, i18n.getFixedT('cs', 'chat'));
+  expect(kind).toBe('Naplánováno');
 });

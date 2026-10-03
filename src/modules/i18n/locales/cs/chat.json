@@ -266,10 +266,15 @@
       "workflow": "Pracovní postup {{name}}",
       "agent": "Agent {{description}}",
       "command": "Příkaz {{description}}",
+      "monitor": "Monitor {{description}}",
       "count_one": "{{count}} úloha",
       "count_few": "{{count}} úlohy",
       "count_many": "{{count}} úlohy",
       "count_other": "{{count}} úloh",
+      "scheduled_one": "{{count}} naplánovaná výzva",
+      "scheduled_few": "{{count}} naplánované výzvy",
+      "scheduled_many": "{{count}} naplánované výzvy",
+      "scheduled_other": "{{count}} naplánovaných výzev",
       "sendAnyway": "V této relaci stále běží práce na pozadí:\n{{work}}\n\nNová zpráva zahájí nové kolo, které tuto práci zastaví; cokoli, co zatím nenahlásila, se ztratí. Přesto odeslat?"
     },
     "controls": {

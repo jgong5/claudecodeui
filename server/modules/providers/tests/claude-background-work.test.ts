@@ -115,6 +115,7 @@ test('a task_started with a tool_use_id adds the task under its session', () => 
     taskType: 'local_workflow',
     description: 'Task t1',
     workflowName: 'spec',
+    toolName: 'Workflow',
   });
   assert.ok(startedAt >= before && startedAt <= Date.now());
   assert.equal(tracker.hasOutstanding('s1'), true);
@@ -210,4 +211,52 @@ test('messages that are not task events leave the set untouched', () => {
   tracker.apply('s1', { type: 'result', task_id: 't1' });
 
   assert.equal(tracker.has('s1', 't1'), true);
+});
+
+test('a Monitor is told from a backgrounded Bash by the call that started it', () => {
+  // Verified on a real run: both start a `local_bash` task and nothing else
+  // on the event says which tool it was.
+  const tracker = createBackgroundWorkTracker();
+  tracker.apply('s1', {
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'toolu_m', name: 'Monitor', input: {} },
+        { type: 'tool_use', id: 'toolu_b', name: 'Bash', input: { run_in_background: true } },
+      ],
+    },
+  });
+  tracker.apply('s1', started('m', { task_type: 'local_bash', tool_use_id: 'toolu_m' }));
+  tracker.apply('s1', started('b', { task_type: 'local_bash', tool_use_id: 'toolu_b' }));
+
+  assert.deepEqual(tracker.list()[0].tasks.map((task) => [task.taskId, task.toolName]), [['m', 'Monitor'], ['b', 'Bash']]);
+});
+
+test('the Stop hook\'s session_crons replace the session\'s scheduled prompts', () => {
+  // The shape a real Stop hook delivered: a recurring CronCreate job and a
+  // ScheduleWakeup, which the CLI keeps as a one-shot pinned to its minute.
+  const tracker = createBackgroundWorkTracker();
+  tracker.setCrons('s1', [
+    { id: '182f5ede', schedule: '* * * * *', recurring: true, prompt: 'say tick' },
+    { id: '7b92ae4a', schedule: '38 10 * * *', recurring: false, prompt: 'wakeup fired' },
+    { id: 42, schedule: '* * * * *' },
+  ]);
+  assert.deepEqual(tracker.crons('s1'), [
+    { id: '182f5ede', schedule: '* * * * *', recurring: true, prompt: 'say tick' },
+    { id: '7b92ae4a', schedule: '38 10 * * *', recurring: false, prompt: 'wakeup fired' },
+  ]);
+  assert.equal(tracker.hasOutstanding('s1'), false, 'scheduled prompts are not tasks');
+
+  // The wakeup fired; the next turn's snapshot no longer lists it.
+  tracker.setCrons('s1', [{ id: '182f5ede', schedule: '* * * * *', recurring: true, prompt: 'say tick' }]);
+  assert.deepEqual(tracker.crons('s1').map((cron) => cron.id), ['182f5ede']);
+
+  tracker.setCrons('s1', undefined);
+  assert.deepEqual(tracker.crons('s1'), []);
+
+  tracker.setCrons('s1', [{ id: 'x', schedule: '* * * * *', recurring: true, prompt: '' }]);
+  tracker.clear('s1');
+  assert.deepEqual(tracker.crons('s1'), [], 'they die with the process');
 });

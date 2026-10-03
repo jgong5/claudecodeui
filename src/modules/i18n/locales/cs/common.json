@@ -463,6 +463,11 @@
     "backgroundTasks": "Úlohy na pozadí",
     "backgroundAgent": "Agent",
     "backgroundCommand": "Příkaz",
+    "backgroundMonitor": "Monitor",
+    "scheduledRecurring": "Cron",
+    "scheduledOnce": "Naplánováno",
+    "schedulePaused": "Čeká, dokud běží úlohy na pozadí",
+    "serverTime": "čas serveru",
     "stopTask": "Zastavit",
     "taskRowNotLoaded": "Spuštěno dříve v této konverzaci; kliknutím načtete",
     "taskOfAgent": "Spuštěno jedním z agentů této relace"

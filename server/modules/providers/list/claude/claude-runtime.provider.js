@@ -644,6 +644,11 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed']);
  * Housekeeping tasks the CLI starts on its own have no `tool_use_id` and are
  * not tracked — nothing in the transcript could show them.
  *
+ * It also keeps the session's scheduled prompts — CronCreate jobs and
+ * ScheduleWakeup wakeups — which emit no task events at all. The CLI hands
+ * them to the Stop hook as `session_crons` at the end of every turn (a fire
+ * is a turn of its own, so the list stays current); `setCrons` records that.
+ *
  * Exported so the folding can be driven with the four event shapes directly;
  * the runtime keeps one instance keyed like `activeSessions`.
  *
@@ -651,6 +656,8 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed']);
  *   apply: (sessionKey: string, message: Object) => void,
  *   hasOutstanding: (sessionKey: string) => boolean,
  *   has: (sessionKey: string, taskId: string) => boolean,
+ *   setCrons: (sessionKey: string, crons: unknown) => void,
+ *   crons: (sessionKey: string) => Array<import('@/shared/types.js').SessionCronSummary>,
  *   clear: (sessionKey: string) => void,
  *   list: () => Array<{ sessionId: string, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary> }>
  * }}
@@ -659,13 +666,17 @@ export function createBackgroundWorkTracker() {
   /** @type {Map<string, Map<string, import('@/shared/types.js').BackgroundTaskSummary>>} */
   const sessions = new Map();
   /**
-   * Tool-use ids the session's own turns issued. A task started for a call an
-   * agent made inside its own transcript — a workflow agent's backgrounded
-   * command, say — reaches this stream too, and nothing in the parent
-   * transcript could show it; it is kept for stopping but flagged `nested`.
-   * @type {Map<string, Set<string>>}
+   * Tool-use ids the session's own turns issued, with the tool each called. A
+   * task started for a call an agent made inside its own transcript — a
+   * workflow agent's backgrounded command, say — reaches this stream too, and
+   * nothing in the parent transcript could show it; it is kept for stopping
+   * but flagged `nested`. The tool name is what tells a Monitor from a
+   * backgrounded Bash: both start a `local_bash` task.
+   * @type {Map<string, Map<string, string>>}
    */
   const ownToolUseIds = new Map();
+  /** @type {Map<string, Array<import('@/shared/types.js').SessionCronSummary>>} */
+  const cronsBySession = new Map();
 
   const remove = (sessionKey, taskId) => {
     const tasks = sessions.get(sessionKey);
@@ -687,10 +698,10 @@ export function createBackgroundWorkTracker() {
             if (block?.type === 'tool_use' && typeof block.id === 'string') {
               let ids = ownToolUseIds.get(sessionKey);
               if (!ids) {
-                ids = new Set();
+                ids = new Map();
                 ownToolUseIds.set(sessionKey, ids);
               }
-              ids.add(block.id);
+              ids.set(block.id, block.name);
             }
           }
         }
@@ -714,7 +725,10 @@ export function createBackgroundWorkTracker() {
           if (typeof message.workflow_name === 'string') {
             task.workflowName = message.workflow_name;
           }
-          if (!ownToolUseIds.get(sessionKey)?.has(message.tool_use_id)) {
+          const toolName = ownToolUseIds.get(sessionKey)?.get(message.tool_use_id);
+          if (typeof toolName === 'string') {
+            task.toolName = toolName;
+          } else {
             task.nested = true;
           }
           let tasks = sessions.get(sessionKey);
@@ -745,9 +759,33 @@ export function createBackgroundWorkTracker() {
       return Boolean(sessions.get(sessionKey)?.has(taskId));
     },
 
+    setCrons(sessionKey, crons) {
+      // Hook input is the CLI's to shape; keep only entries the UI can read.
+      const valid = Array.isArray(crons)
+        ? crons
+          .filter((cron) => typeof cron?.id === 'string' && typeof cron.schedule === 'string')
+          .map((cron) => ({
+            id: cron.id,
+            schedule: cron.schedule,
+            recurring: cron.recurring === true,
+            prompt: typeof cron.prompt === 'string' ? cron.prompt : ''
+          }))
+        : [];
+      if (valid.length > 0) {
+        cronsBySession.set(sessionKey, valid);
+      } else {
+        cronsBySession.delete(sessionKey);
+      }
+    },
+
+    crons(sessionKey) {
+      return cronsBySession.get(sessionKey) ?? [];
+    },
+
     clear(sessionKey) {
       sessions.delete(sessionKey);
       ownToolUseIds.delete(sessionKey);
+      cronsBySession.delete(sessionKey);
     },
 
     list() {
@@ -1198,6 +1236,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
             requiresUserAction: true,
             dedupeKey: `claude:hook:notification:${sessionId || capturedSessionId || 'none'}:${message}`
           }));
+          return {};
+        }]
+      }],
+      // The only place the CLI reports its scheduled prompts: CronCreate and
+      // ScheduleWakeup emit no task events, and a fire looks like any turn.
+      Stop: [{
+        hooks: [async (input) => {
+          if (sessionKey()) {
+            backgroundWork.setCrons(sessionKey(), input?.session_crons);
+          }
           return {};
         }]
       }]
@@ -1680,13 +1728,13 @@ function exitClaudeSDKSession(sessionId) {
 /**
  * Sessions whose process is still up and taking input, with the background
  * tasks they still have outstanding (none, for a process held only for a
- * Monitor, ScheduleWakeup or CronCreate).
+ * ScheduleWakeup or CronCreate) and the scheduled prompts as of the last turn.
  *
  * A session stays here after its turn's `result` for as long as the process
  * is held open — which is exactly the window in which nothing else (the chat
  * run registry marks the run completed at `result`) knows the session is
  * still busy.
- * @returns {Array<{ sessionId: string, startedAt: number, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary> }>}
+ * @returns {Array<{ sessionId: string, startedAt: number, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary>, crons: Array<import('@/shared/types.js').SessionCronSummary> }>}
  */
 function listClaudeSDKBackgroundWork() {
   const tasksBySession = new Map(backgroundWork.list().map((entry) => [entry.sessionId, entry.tasks]));
@@ -1695,7 +1743,8 @@ function listClaudeSDKBackgroundWork() {
     .map(([sessionId, session]) => ({
       sessionId,
       startedAt: session.startTime,
-      tasks: tasksBySession.get(sessionId) ?? []
+      tasks: tasksBySession.get(sessionId) ?? [],
+      crons: backgroundWork.crons(sessionId)
     }));
 }
 

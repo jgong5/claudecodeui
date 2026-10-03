@@ -131,3 +131,24 @@ test('a poll that changes what it says about a listed task is not dropped as a r
   assert.equal(listed?.nested, true);
   assert.equal(listed?.description, 'Audit the whole frontend');
 });
+
+test('a turn ending with no task left keeps the session busy while the poll lists scheduled prompts', () => {
+  // A held process with a cron job reports no task; only the poll knows of
+  // the job, and the turn's end must not blank it until the next poll.
+  const { result } = renderHook(() => useSessionProtection());
+  const crons = [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' }];
+
+  act(() => {
+    result.current.syncProcessingSessions([{ sessionId: 'session-1', background: true, canInterrupt: false, tasks: [], crons }]);
+  });
+  act(() => {
+    result.current.markSessionProcessing('session-1', { statusText: null, canInterrupt: true });
+  });
+  act(() => {
+    result.current.markSessionBackground('session-1', []);
+  });
+
+  const activity = result.current.getSessionActivity('session-1');
+  assert.equal(activity?.background, true);
+  assert.deepEqual(activity?.crons, crons);
+});

@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { X } from 'lucide-react';
 
-import type { BackgroundTaskSummary, ChatMessage } from '@/shared/types';
+import type { BackgroundTaskSummary, ChatMessage, SessionCronSummary } from '@/shared/types';
 import {
+  describeSessionCron,
   describeWorkflowAgent,
   findCurrentWorkflowAgent,
   listRunningBackgroundLaunches,
@@ -25,6 +26,8 @@ type BackgroundTasksStripProps = {
    * row to draw from and is listed from here, so it can still be stopped.
    */
   tasks?: BackgroundTaskSummary[];
+  /** The prompts the session's process has scheduled — CronCreate jobs and ScheduleWakeups — as the running-sessions poll last reported them. */
+  crons?: SessionCronSummary[];
   /** The session the tasks belong to, which `chat.stop-task` names; null before one exists. */
   sessionId: string | null;
   /** The chat websocket's send, for stopping a task. */
@@ -64,9 +67,11 @@ function describeTask(message: ChatMessage, t: TFunction) {
     : message.subagent?.description || live?.description || '';
   const kind = message.toolName === 'Workflow'
     ? t('workflow.title', 'Workflow')
-    : message.toolName === 'Bash'
-      ? t('workflow.backgroundCommand', 'Command')
-      : t('workflow.backgroundAgent', 'Agent');
+    : message.toolName === 'Monitor'
+      ? t('workflow.backgroundMonitor', 'Monitor')
+      : message.toolName === 'Bash'
+        ? t('workflow.backgroundCommand', 'Command')
+        : t('workflow.backgroundAgent', 'Agent');
 
   // A workflow reports on each agent it spawned — "2/6 agents · audit:sidebar"
   // says how many have finished and the one it is on. Short of that, its own
@@ -97,11 +102,12 @@ function describeTask(message: ChatMessage, t: TFunction) {
 
 /**
  * Rendered by chat's ChatMessagesPane above the transcript: one chip per
- * background task — workflow, agent or command — that is still running, each
- * scrolling to its card when clicked and stoppable from its ✕. Renders
+ * background task — workflow, agent, command or monitor — that is still
+ * running, each scrolling to its card when clicked and stoppable from its ✕,
+ * then one per scheduled prompt, which only the model can cancel. Renders
  * nothing while nothing runs, which is most of the time.
  */
-export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
+export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
   const { t } = useTranslation();
   const running = listRunningBackgroundLaunches(messages);
   // A loaded row that has a word on its task — settled or not — is the word;
@@ -113,9 +119,14 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
   );
   const fromMap = ownBackgroundTasks(tasks ?? []).filter((task) => !settledToolIds.has(task.toolUseId));
 
-  if (running.length === 0 && fromMap.length === 0) {
+  const scheduled = crons ?? [];
+
+  if (running.length === 0 && fromMap.length === 0 && scheduled.length === 0) {
     return null;
   }
+  // The CLI does not check its schedule while any background task runs, so a
+  // prompt due meanwhile waits for the last one to finish.
+  const schedulePaused = running.length > 0 || fromMap.length > 0;
 
   return (
     <div
@@ -157,9 +168,11 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
       {fromMap.map((task) => {
         const kind = task.taskType === 'local_workflow'
           ? t('workflow.title', 'Workflow')
-          : task.taskType === 'local_bash'
-            ? t('workflow.backgroundCommand', 'Command')
-            : t('workflow.backgroundAgent', 'Agent');
+          : task.toolName === 'Monitor'
+            ? t('workflow.backgroundMonitor', 'Monitor')
+            : task.taskType === 'local_bash'
+              ? t('workflow.backgroundCommand', 'Command')
+              : t('workflow.backgroundAgent', 'Agent');
         const name = task.workflowName ?? task.description;
         const label = (
           <>
@@ -200,6 +213,27 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
                 <X className="h-3 w-3" />
               </button>
             )}
+          </span>
+        );
+      })}
+      {scheduled.map((cron) => {
+        const { kind, when } = describeSessionCron(cron, t);
+        const title = [
+          kind,
+          `${when} (${t('workflow.serverTime', 'server time')})`,
+          cron.prompt,
+          schedulePaused ? t('workflow.schedulePaused', 'Waits while background tasks run') : '',
+        ].filter(Boolean).join(' · ');
+        return (
+          <span
+            key={cron.id}
+            title={title}
+            className={`flex min-w-0 max-w-xs items-center gap-1.5 rounded px-1.5 py-0.5 ${schedulePaused ? 'opacity-50' : ''}`}
+          >
+            <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-sky-500 dark:bg-sky-400" />
+            <span className="flex-shrink-0 font-medium text-foreground">{kind}</span>
+            <span className="flex-shrink-0 font-mono">{when}</span>
+            {cron.prompt && <span className="min-w-0 truncate">{cron.prompt}</span>}
           </span>
         );
       })}

@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 
-import type { BackgroundTaskStatus, BackgroundTaskSummary, ChatMessage, WorkflowAgentProgress } from '@/shared/types';
+import type { BackgroundTaskStatus, BackgroundTaskSummary, ChatMessage, SessionCronSummary, WorkflowAgentProgress } from '@/shared/types';
 
 /**
  * Settles one background task's status from its two sources.
@@ -63,7 +63,7 @@ export function listRunningBackgroundLaunches(messages: ChatMessage[]): Backgrou
 }
 
 /** The SDK's task type for what a tool launched, when no live event has said. */
-const TASK_TYPE_BY_TOOL: Record<string, string> = { Workflow: 'local_workflow', Bash: 'local_bash' };
+const TASK_TYPE_BY_TOOL: Record<string, string> = { Workflow: 'local_workflow', Bash: 'local_bash', Monitor: 'local_bash' };
 
 /**
  * The background tasks a transcript still has running, in the shape the
@@ -87,6 +87,7 @@ export function collectRunningBackgroundTasks(messages: ChatMessage[]): Backgrou
       taskType: live?.taskType ?? TASK_TYPE_BY_TOOL[message.toolName ?? ''] ?? 'local_agent',
       description: live?.description ?? message.subagent?.description ?? '',
       ...(workflowName ? { workflowName } : {}),
+      ...(message.toolName ? { toolName: message.toolName } : {}),
       // The call is the launch: the SDK's start event follows it within the
       // same second.
       startedAt: new Date(message.timestamp).getTime(),
@@ -142,8 +143,27 @@ export function ownBackgroundTasks(allTasks: BackgroundTaskSummary[]): Backgroun
   return own.length > 0 ? own : allTasks;
 }
 
-/** One background task by kind and name: "Workflow audit", "Agent Survey the repo", "Command npm test". */
+/**
+ * One scheduled prompt's kind and when it fires: a recurring job's cron
+ * expression, or a one-shot's `HH:MM` — the CLI pins a ScheduleWakeup (or a
+ * one-shot CronCreate) to a minute and hour. Both are in the server's local
+ * time.
+ */
+export function describeSessionCron(cron: SessionCronSummary, t: TFunction): { kind: string; when: string } {
+  const [minute = '', hour = ''] = cron.schedule.trim().split(/\s+/);
+  const pinned = !cron.recurring && /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour);
+  return {
+    // Qualified: the composer calls this with a `t` bound to `chat`.
+    kind: cron.recurring ? t('common:workflow.scheduledRecurring', 'Cron') : t('common:workflow.scheduledOnce', 'Scheduled'),
+    when: pinned ? `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}` : cron.schedule,
+  };
+}
+
+/** One background task by kind and name: "Workflow audit", "Agent Survey the repo", "Command npm test", "Monitor CI log". */
 export function describeBackgroundTask(task: BackgroundTaskSummary, t: TFunction): string {
+  if (task.toolName === 'Monitor') {
+    return t('claudeStatus.backgroundTask.monitor', { description: task.description, defaultValue: 'Monitor {{description}}' });
+  }
   switch (task.taskType) {
     case 'local_workflow':
       return t('claudeStatus.backgroundTask.workflow', { name: task.workflowName ?? task.description, defaultValue: 'Workflow {{name}}' });

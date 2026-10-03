@@ -493,6 +493,7 @@ function ChatInterface({
               loadEarlierMessages={loadEarlierMessages}
               revealMessage={revealMessage}
               backgroundTasks={sessionActivity?.tasks}
+              backgroundCrons={sessionActivity?.crons}
               sendMessage={sendMessage}
               loadAllMessages={loadAllMessages}
               allMessagesLoaded={allMessagesLoaded}

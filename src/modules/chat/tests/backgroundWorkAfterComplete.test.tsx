@@ -97,6 +97,7 @@ test('a turn that ends with a task still running leaves the session as backgroun
       taskId: 'wxkj4kcvd',
       toolUseId: 'toolu_workflow_1',
       taskType: 'local_workflow',
+      toolName: 'Workflow',
       description: 'Audit the frontend',
       workflowName: 'audit',
       startedAt: Date.parse('2026-08-21T10:32:10.000Z'),
@@ -167,8 +168,8 @@ test('tasks the history load left running count too, described by their launch',
   assert.deepEqual(log, [{
     sessionId: 'viewed-session',
     tasks: [
-      { taskId: 'a1', toolUseId: 'toolu_agent_1', taskType: 'local_agent', description: 'Survey the repo', startedAt: Date.parse('2026-08-21T10:32:10.000Z') },
-      { taskId: 'wxkj4kcvd', toolUseId: 'toolu_workflow_1', taskType: 'local_workflow', description: '', workflowName: 'audit', startedAt: Date.parse('2026-08-21T10:32:10.000Z') },
+      { taskId: 'a1', toolUseId: 'toolu_agent_1', taskType: 'local_agent', description: 'Survey the repo', toolName: 'Agent', startedAt: Date.parse('2026-08-21T10:32:10.000Z') },
+      { taskId: 'wxkj4kcvd', toolUseId: 'toolu_workflow_1', taskType: 'local_workflow', description: '', workflowName: 'audit', toolName: 'Workflow', startedAt: Date.parse('2026-08-21T10:32:10.000Z') },
     ],
   }]);
 });
