@@ -96,6 +96,7 @@ const createDefaultNotificationPreferences = (): NotificationPreferencesState =>
     actionRequired: true,
     stop: true,
     error: true,
+    stopTiming: 'everyTurn',
   },
 });
 
@@ -115,6 +116,7 @@ const normalizeNotificationPreferences = (
       actionRequired: preferences?.events?.actionRequired ?? defaults.events.actionRequired,
       stop: preferences?.events?.stop ?? defaults.events.stop,
       error: preferences?.events?.error ?? defaults.events.error,
+      stopTiming: preferences?.events?.stopTiming ?? defaults.events.stopTiming,
     },
   };
 };

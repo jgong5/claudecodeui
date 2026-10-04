@@ -18,6 +18,8 @@ type NotificationPreferences = {
     actionRequired: boolean;
     stop: boolean;
     error: boolean;
+    /** When a completed turn notifies: right away, or once the session has no work left running. */
+    stopTiming: 'everyTurn' | 'whenIdle';
   };
 };
 
@@ -32,6 +34,7 @@ const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
     actionRequired: true,
     stop: true,
     error: true,
+    stopTiming: 'everyTurn',
   },
 };
 
@@ -57,6 +60,7 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
       actionRequired: source.events?.actionRequired !== false,
       stop: source.events?.stop !== false,
       error: source.events?.error !== false,
+      stopTiming: source.events?.stopTiming === 'whenIdle' ? 'whenIdle' : 'everyTurn',
     },
   };
 }

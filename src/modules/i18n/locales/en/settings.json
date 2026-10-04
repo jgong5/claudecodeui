@@ -164,6 +164,11 @@
       "title": "Event Types",
       "actionRequired": "Action required",
       "stop": "Run stopped",
+      "stopTiming": {
+        "label": "When to notify that a run stopped",
+        "everyTurn": "After every turn",
+        "whenIdle": "When no work is left running"
+      },
       "error": "Run failed"
     }
   },

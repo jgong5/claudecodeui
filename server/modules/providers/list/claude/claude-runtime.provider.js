@@ -34,7 +34,8 @@ import {
   notifyBackgroundWorkCompleted,
   notifyRunFailed,
   notifyRunStopped,
-  notifyUserIfEnabled
+  notifyUserIfEnabled,
+  stopNoticeWaitsForIdle
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
@@ -995,6 +996,10 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   let heldForBackgroundWork = false;
   // The part of that hold only the static rule knows about.
   let heldForUntrackedWork = false;
+  // Set when a turn completed with work still running and the user wants its
+  // stop notice only once the session is idle: sent when that work is done,
+  // or when the process ends.
+  let stopNoticeDeferred = false;
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
@@ -1489,6 +1494,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         lastResultAborted = abortPending;
         const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
         if (abortPending) {
+          stopNoticeDeferred = false;
           settleTurn();
           notifyRunStopped({
             userId: ws?.userId || null,
@@ -1501,13 +1507,31 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
           settleTurn();
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
+          // Only tracked tasks put off the notice: untracked work is scheduled
+          // prompts (hours off, maybe) or a TaskCreate that never reports back.
+          stopNoticeDeferred = stillOutstanding && stopNoticeWaitsForIdle(ws?.userId || null);
+          if (!stopNoticeDeferred) {
+            notifyRunStopped({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary,
+              stopReason: 'completed'
+            });
+          }
+        } else if (stopNoticeDeferred) {
+          // The held notice stands in for "background work finished", once
+          // the last tracked task has reported back.
+          if (!stillOutstanding) {
+            stopNoticeDeferred = false;
+            notifyRunStopped({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary,
+              stopReason: 'completed'
+            });
+          }
         } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
           // A result after the turn already reported complete means the work we
           // held the process open for has finished and pushed a follow-up turn
@@ -1594,6 +1618,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         sessionId: sessionId || capturedSessionId || null,
         sessionName: sessionSummary,
         stopReason: wasAborted ? 'aborted' : 'completed'
+      });
+    } else if (stopNoticeDeferred && !superseded && !wasAborted) {
+      // The held work never reported and the process ended anyway (the
+      // silence ceiling, say): the session is idle now.
+      notifyRunStopped({
+        userId: ws?.userId || null,
+        provider: 'claude',
+        sessionId: sessionId || capturedSessionId || null,
+        sessionName: sessionSummary,
+        stopReason: 'completed'
       });
     }
     // Complete

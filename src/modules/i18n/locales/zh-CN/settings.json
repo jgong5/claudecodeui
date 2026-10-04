@@ -164,6 +164,11 @@
       "title": "事件类型",
       "actionRequired": "需要处理",
       "stop": "运行已停止",
+      "stopTiming": {
+        "label": "运行停止通知的时机",
+        "everyTurn": "每轮结束时",
+        "whenIdle": "没有任务在运行时"
+      },
       "error": "运行失败"
     }
   },

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
-import { notificationPreferencesDb, sessionsDb } from '@/modules/database/index.js';
+import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
@@ -15,6 +16,10 @@ import {
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import type { AnyRecord, NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
+
+// web-push ships no types; required, it is the same CommonJS object the
+// notification orchestrator sends through, so mocking it reaches the sends.
+const webPush = createRequire(import.meta.url)('web-push') as { sendNotification: (subscription: unknown, payload: string) => Promise<unknown> };
 
 /**
  * The runtime keeps the CLI's stdin open after a turn's `result` while the
@@ -126,7 +131,7 @@ type RunContext = {
   context: ProviderRuntimeContext;
 };
 
-async function withRun(runTest: (run: RunContext) => Promise<void>, userId: number | null = null): Promise<void> {
+async function withRun(runTest: (run: RunContext) => Promise<void>, userId: number | null = null, sessionId = SESSION_ID): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
   const sent: NormalizedMessage[] = [];
@@ -142,7 +147,7 @@ async function withRun(runTest: (run: RunContext) => Promise<void>, userId: numb
   };
 
   try {
-    const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd }, writer as never, context);
+    const done = queryClaudeSDK('hello', { sessionId, cwd }, writer as never, context);
     await runTest({ script, sent, done, cwd, context });
     script.end();
     await done;
@@ -664,6 +669,103 @@ test('a result while a pushed message is queued arms no ceiling over scheduled p
       await settle();
       assert.equal(script.released(), false, 'a 1ms ceiling would have let go of it');
     });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
+});
+
+/**
+ * Records the code of every notification sent, with web push the one channel
+ * on. Notices are deduplicated per session for 20s, so each test that records
+ * them runs its own session id.
+ */
+function recordNotices(t: TestContext, stopTiming: 'everyTurn' | 'whenIdle'): string[] {
+  const codes: string[] = [];
+  t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({
+    channels: { webPush: true },
+    events: { actionRequired: true, stop: true, error: true, stopTiming },
+  }) as never);
+  t.mock.method(pushSubscriptionsDb, 'getSubscriptions', () => [{ endpoint: 'https://push.invalid', keys_p256dh: '', keys_auth: '' }] as never);
+  t.mock.method(webPush, 'sendNotification', async (_subscription: unknown, payload: string) => {
+    codes.push(JSON.parse(payload).data.code);
+  });
+  t.mock.method(sessionsDb, 'getSessionById', () => null);
+  t.mock.method(sessionsDb, 'getSessionByProviderSessionId', () => null);
+  t.mock.method(sessionsDb, 'getSessionName', () => null);
+  return codes;
+}
+
+/** Ends a turn that left a workflow running, then lets the workflow report back in a turn of its own. */
+const workflowOutlivesTurn = async (script: Scripted, codes: string[]) => {
+  script.emit(init());
+  script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+  script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+  script.emit(ack('toolu_wf', 'Workflow launched in background. Task ID: wf1', { status: 'async_launched', taskId: 'wf1', taskType: 'local_workflow' }));
+  script.emit(result());
+  await settle();
+  const atTurnEnd = [...codes];
+
+  script.emit(taskNotification('wf1', 'toolu_wf', 'completed'));
+  script.emit(result());
+  await settle();
+  return atTurnEnd;
+};
+
+test('every-turn timing notifies at the turn\'s end and again when its work is done', async (t) => {
+  const codes = recordNotices(t, 'everyTurn');
+  await withRun(async ({ script }) => {
+    assert.deepEqual(await workflowOutlivesTurn(script, codes), ['run.stopped']);
+    assert.deepEqual(codes, ['run.stopped', 'run.background_completed']);
+  }, 1, 'app-notice-every-turn');
+});
+
+test('when-idle timing holds the stop notice until the turn\'s work is done', async (t) => {
+  const codes = recordNotices(t, 'whenIdle');
+  await withRun(async ({ script }) => {
+    assert.deepEqual(await workflowOutlivesTurn(script, codes), [], 'the workflow is still running');
+    assert.deepEqual(codes, ['run.stopped']);
+  }, 1, 'app-notice-when-idle');
+});
+
+test('when-idle timing does not wait on a scheduled wakeup, and its fire sends no second notice', async (t) => {
+  const codes = recordNotices(t, 'whenIdle');
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_wake', 'ScheduleWakeup', { delaySeconds: 60, prompt: 'check CI' }));
+    script.emit(ack('toolu_wake', 'Wakeup scheduled', {}));
+    script.emit(result());
+    await settle();
+    assert.deepEqual(codes, ['run.stopped'], 'a wakeup emits no task events, so the turn notifies at once');
+
+    // The wakeup fires as a turn of its own and the hold lets go.
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), true);
+    assert.deepEqual(codes, ['run.stopped']);
+  }, 1, 'app-notice-wakeup');
+});
+
+test('when-idle timing sends the held stop notice when the process ends with the work unreported', async (t) => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  process.env.BG_WAIT_CEILING_MS = '20';
+  const codes = recordNotices(t, 'whenIdle');
+  try {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(toolUse('toolu_monitor', 'Monitor', { command: 'tail -f x', description: 'watch', timeout_ms: 1000 }));
+      script.emit(taskStarted('m1', 'toolu_monitor', 'local_bash'));
+      script.emit(ack('toolu_monitor', 'Monitor started', {}));
+      script.emit(result());
+      await settle();
+      assert.deepEqual(codes, [], 'the Monitor is still running');
+      await settle();
+      assert.equal(script.released(), true, 'the ceiling let the process go');
+    }, 1, 'app-notice-ceiling');
+    assert.deepEqual(codes, ['run.stopped']);
   } finally {
     if (previous === undefined) {
       delete process.env.BG_WAIT_CEILING_MS;

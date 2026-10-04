@@ -31,6 +31,11 @@ const cleanupOldEventKeys = () => {
 function isNotificationEventEnabled(preferences, event) {
   const prefEventKey = KIND_TO_PREF_KEY[event.kind];
   const eventEnabled = prefEventKey ? Boolean(preferences?.events?.[prefEventKey]) : true;
+  // Waiting for idle folds "background work finished" into the one stop notice
+  // the runtime sends once the session is idle.
+  if (event.code === 'run.background_completed' && preferences?.events?.stopTiming === 'whenIdle') {
+    return false;
+  }
 
   return eventEnabled;
 }
@@ -245,6 +250,19 @@ function notifyUserIfEnabled({ userId, event }) {
       console.error(`Notification channel "${channel.id}" send error:`, err);
     });
   }
+}
+
+/**
+ * Whether the user wants a completed turn's stop notice held back until the
+ * session has no work left running (`stopTiming: 'whenIdle'`). Used by the
+ * Claude runtime, which asks only when a turn completes with tracked tasks
+ * still running.
+ */
+export function stopNoticeWaitsForIdle(userId) {
+  if (!userId) {
+    return false;
+  }
+  return notificationPreferencesDb.getPreferences(userId).events?.stopTiming === 'whenIdle';
 }
 
 function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null }) {
