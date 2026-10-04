@@ -80,6 +80,10 @@ export type ProjectSession = {
   messageCount?: number;
   provider?: LLMProvider;
   __provider?: LLMProvider;
+  /** `external` when the session was started outside CloudCLI; absent on rows the client made up. */
+  origin?: 'app' | 'external';
+  /** How an external session's CLI was started (`cli`, `sdk-ts`); null when the transcript does not say. */
+  entrypoint?: string | null;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;

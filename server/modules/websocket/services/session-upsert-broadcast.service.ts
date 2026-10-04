@@ -49,6 +49,8 @@ async function buildSessionUpsertedEvent(
       summary: row.custom_name || '',
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      origin: row.origin ?? 'app',
+      entrypoint: row.entrypoint ?? null,
     },
     project: project
       ? {

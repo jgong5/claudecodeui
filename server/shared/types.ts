@@ -227,6 +227,15 @@ export type SessionUpsertedProject = {
 };
 
 /**
+ * Whether a session was started in this app or outside it, as the sidebar
+ * marks it. Derived from the session row by the sessions repository: `app`
+ * when the provider session id is unset or differs from the app id, else
+ * `external`. App sessions from before the provider id mapping read as
+ * `external`.
+ */
+export type SessionOrigin = 'app' | 'external';
+
+/**
  * The `session_upserted` sidebar delta, built only by
  * `modules/websocket/services/session-upsert-broadcast.service.ts`.
  *
@@ -248,6 +257,9 @@ export type SessionUpsertedEvent = {
     summary: string;
     messageCount: number;
     lastActivity: string;
+    origin: SessionOrigin;
+    /** How an external session's CLI was started (`cli`, `sdk-ts`); NULL when unknown. */
+    entrypoint: string | null;
   };
   project: SessionUpsertedProject | null;
   timestamp: string;

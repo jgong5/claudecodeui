@@ -136,6 +136,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- synchronizer applied, so an unchanged one never reverts a web rename.
     name_source TEXT,
     last_custom_title TEXT,
+    -- How the provider CLI was started for this session, read from its
+    -- transcript ('cli', 'sdk-ts', ...); NULL when the transcript does not say.
+    entrypoint TEXT,
     project_path TEXT,
     jsonl_path TEXT,
     -- Model and reasoning effort this session runs with. Written when the user

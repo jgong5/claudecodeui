@@ -15,6 +15,8 @@ type SessionViewModel = {
   sessionName: string;
   sessionTime: string;
   messageCount: number;
+  /** Set only for a session started outside CloudCLI: how it was started, or '' when unknown. */
+  externalEntrypoint: string | null;
 };
 
 export const formatCompactAge = (
@@ -74,6 +76,7 @@ export const createSessionViewModel = (
     sessionName: getSessionName(session, t),
     sessionTime: getSessionTime(session),
     messageCount: Number(session.messageCount || 0),
+    externalEntrypoint: session.origin === 'external' ? session.entrypoint || '' : null,
   };
 };
 

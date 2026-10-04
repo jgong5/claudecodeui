@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
+import { Check, CheckSquare, Edit2, Loader2, MoreHorizontal, Square, SquareTerminal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -81,6 +81,15 @@ function SidebarSessionItem({
       ? t('tooltips.backgroundWorkIndicator', { defaultValue: 'Background work running' })
       : t('tooltips.activeSessionIndicator');
   const providerLabel = PROVIDER_LABELS[session.__provider];
+  const { externalEntrypoint } = sessionView;
+  const externalLabel = externalEntrypoint
+    ? t('tooltips.externalSessionEntrypointIndicator', { entrypoint: externalEntrypoint })
+    : t('tooltips.externalSessionIndicator');
+  const externalMarker = externalEntrypoint !== null && (
+    <Tooltip content={externalLabel} position="top">
+      <SquareTerminal className="h-3 w-3 flex-shrink-0 text-muted-foreground" role="img" aria-label={externalLabel} />
+    </Tooltip>
+  );
 
   // The desktop controls live in SessionOptions, which owns the rename panel and
   // its outside-click dismissal. The mobile rename sits inside the bottom sheet,
@@ -207,6 +216,7 @@ function SidebarSessionItem({
                 >
                   {sessionView.sessionName}
                 </div>
+                {externalMarker}
                 {isProcessing ? (
                   <span className="ml-auto flex-shrink-0">
                     <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
@@ -431,6 +441,7 @@ function SidebarSessionItem({
                 >
                   {sessionView.sessionName}
                 </div>
+                {externalMarker}
                 {isProcessing ? (
                   <span
                     className={cn(

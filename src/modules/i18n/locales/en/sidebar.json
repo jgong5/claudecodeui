@@ -57,7 +57,9 @@
     "clearSearch": "Clear search",
     "openCommandPalette": "Open command palette",
     "attentionRequiredIndicator": "Session needs attention",
-    "backgroundWorkIndicator": "Background work running"
+    "backgroundWorkIndicator": "Background work running",
+    "externalSessionIndicator": "Started outside CloudCLI",
+    "externalSessionEntrypointIndicator": "Started outside CloudCLI ({{entrypoint}})"
   },
   "navigation": {
     "chat": "Chat",
