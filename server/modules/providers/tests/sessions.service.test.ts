@@ -547,6 +547,52 @@ test('an idle external process with an unreported background Bash reads as runni
   }
 });
 
+test('a cached history page stops reading an external session\'s Bash as running once its process is gone', { concurrency: false }, async () => {
+  const projectDirectory = await mkdtemp(path.join(os.tmpdir(), 'external-exit-'));
+  const sessionId = 'claude-native-external-exit';
+  const rows = [
+    {
+      type: 'assistant', uuid: 'bash-call', sessionId, timestamp: '2026-10-03T10:05:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'sleep 900' } }] },
+    },
+    {
+      type: 'user', uuid: 'bash-ack', sessionId, timestamp: '2026-10-03T10:05:00.000Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'Command running in background' }] },
+      toolUseResult: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bexit001' },
+    },
+  ];
+  const transcriptPath = path.join(projectDirectory, `${sessionId}.jsonl`);
+  await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', projectDirectory, 'External session', now, now, transcriptPath);
+      const bashStatus = async () => (await sessionsService.fetchHistory(sessionId)).messages
+        .find((message) => message.kind === 'tool_use' && message.toolId === 'toolu_bash')?.backgroundStatus;
+
+      await withClaudeCliRegistry(
+        [{ pid: process.pid, sessionId, status: 'idle', startedAt: Date.parse('2026-10-03T10:00:00.000Z') }],
+        async () => await withProviders(
+          { claude: { run: async () => undefined, abort: () => false } },
+          async () => {
+            assert.equal((await sessionsService.listRunningSessions()).length, 1);
+            assert.equal(await bashStatus(), 'running');
+
+            // Killed outright: the CLI drops out of the registry and writes
+            // nothing to the transcript.
+            await rm(path.join(os.homedir(), '.claude', 'sessions', `${process.pid}.json`));
+            assert.deepEqual(await sessionsService.listRunningSessions(), []);
+            assert.equal(await bashStatus(), 'stopped');
+          },
+        ),
+      );
+    });
+  } finally {
+    await rm(projectDirectory, { recursive: true, force: true });
+  }
+});
+
 test('a session another Claude process holds can be archived but not deleted', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('held-session', 'claude', '/tmp/running-project');

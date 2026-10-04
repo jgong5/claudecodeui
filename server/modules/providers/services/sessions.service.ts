@@ -144,6 +144,9 @@ function resolveProjectDisplayName(
   return path.basename(projectPath) || projectPath;
 }
 
+/** Sessions the last running-sessions poll saw held by an external Claude process. */
+let lastExternalSessionIds = new Set<string>();
+
 /**
  * Application service for provider-backed session message operations.
  *
@@ -204,7 +207,20 @@ export const sessionsService = {
     // drives itself, so without this a session held by any other Claude
     // process — including one CloudCLI spawned for its own Shell view — looks
     // idle. A session already listed above keeps its richer entry.
-    for (const live of await listExternalClaudeCliSessions()) {
+    const externalSessions = await listExternalClaudeCliSessions();
+    // A cached history page read while the external process lived reports its
+    // unreported background work as `running`. A process killed outright
+    // writes nothing at exit, so the transcript's stat never invalidates that
+    // entry; its leaving this poll is the only sign the work stopped with it.
+    const externalSessionIds = new Set(externalSessions.map((live) => live.sessionId));
+    for (const sessionId of lastExternalSessionIds) {
+      if (!externalSessionIds.has(sessionId)) {
+        sessionHistoryCache.invalidate(sessionId);
+      }
+    }
+    lastExternalSessionIds = externalSessionIds;
+
+    for (const live of externalSessions) {
       if (runningById.has(live.sessionId)) {
         continue;
       }
