@@ -546,3 +546,35 @@ test('an idle external process with an unreported background Bash reads as runni
     await rm(projectDirectory, { recursive: true, force: true });
   }
 });
+
+test('a session another Claude process holds can be archived but not deleted', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('held-session', 'claude', '/tmp/running-project');
+    sessionsDb.assignProviderSessionId('held-session', 'claude-native-held');
+
+    await withClaudeCliRegistry(
+      [{ pid: process.pid, sessionId: 'claude-native-held', status: 'idle', startedAt: 1_000 }],
+      async () => {
+        await assert.rejects(
+          sessionsService.deleteOrArchiveSessionById('held-session', { force: true }),
+          (error: Error & { code?: string; statusCode?: number }) =>
+            error.code === 'SESSION_HELD_EXTERNALLY' && error.statusCode === 409,
+        );
+        assert.ok(sessionsDb.getSessionById('held-session'), 'the row survives');
+
+        assert.equal(
+          (await sessionsService.deleteOrArchiveSessionById('held-session')).action,
+          'archived',
+        );
+      },
+    );
+
+    // Once that process exits, the delete goes through.
+    await withClaudeCliRegistry([], async () => {
+      assert.equal(
+        (await sessionsService.deleteOrArchiveSessionById('held-session', { force: true })).action,
+        'deleted',
+      );
+    });
+  });
+});

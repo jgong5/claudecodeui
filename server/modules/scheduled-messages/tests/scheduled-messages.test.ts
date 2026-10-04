@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os, { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -306,5 +306,51 @@ test('scheduling validates its input', async () => {
       () => scheduledMessagesService.schedule({ ...base, sessionId: 'nope', content: 'hi' }),
       (error: Error & { code?: string }) => error.code === 'SESSION_NOT_FOUND',
     );
+  });
+});
+
+test('a queued and a scheduled message wait while another Claude process holds the session, then go', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'claude-native-held');
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'queued turn' } });
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'scheduled turn',
+      scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    // A terminal `claude` on the session: `process.pid` is the one pid
+    // guaranteed to be alive.
+    const home = await mkdtemp(path.join(tmpdir(), 'held-home-'));
+    const registry = path.join(home, '.claude', 'sessions');
+    await mkdir(registry, { recursive: true });
+    await writeFile(
+      path.join(registry, `${process.pid}.json`),
+      JSON.stringify({ pid: process.pid, sessionId: 'claude-native-held', status: 'idle', startedAt: 1_000 }),
+    );
+    const realHomedir = os.homedir;
+    (os as unknown as { homedir: () => string }).homedir = () => home;
+
+    try {
+      const runs: RunCall[] = [];
+      await dispatchDueScheduledMessages(createRuntime(runs));
+      await dispatchQueuedMessages(createRuntime(runs));
+
+      assert.equal(runs.length, 0);
+      assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID)[0].status, 'pending');
+      assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'queued turn' });
+
+      // The terminal `claude` exits: the next passes send both.
+      await rm(registry, { recursive: true, force: true });
+      await dispatchDueScheduledMessages(createRuntime(runs));
+      await dispatchQueuedMessages(createRuntime(runs));
+
+      assert.deepEqual(runs.map((run) => run.command), ['scheduled turn', 'queued turn']);
+      assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID)[0].status, 'sent');
+    } finally {
+      (os as unknown as { homedir: () => string }).homedir = realHomedir;
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

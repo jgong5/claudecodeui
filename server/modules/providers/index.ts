@@ -10,5 +10,9 @@ export { providerModelsService } from './services/provider-models.service.js';
 // edited message's resume point, which only the providers module can read.
 export { sessionsService } from './services/sessions.service.js';
 
+// isSessionHeldExternally: used by the websocket module's chat gateway to
+// refuse a run on a session another Claude process holds.
+export { isSessionHeldExternally } from './services/claude-cli-liveness.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';

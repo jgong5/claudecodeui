@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, LockIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -251,6 +251,9 @@ export default function ChatComposer({
   const hasPendingPermissions = pendingPermissionRequests.length > 0;
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
+  // Another Claude process holds the session; the server refuses sends to it.
+  const isHeldExternally = Boolean(activity?.external);
+
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
@@ -306,6 +309,13 @@ export default function ChatComposer({
           >
             {t('composer.editing.cancel')}
           </button>
+        </div>
+      )}
+
+      {isHeldExternally && (
+        <div className="mx-auto mb-2 flex max-w-[54.25rem] items-center gap-2 rounded-xl border border-border/50 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <LockIcon className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{t('composer.heldExternally')}</span>
         </div>
       )}
 
@@ -426,6 +436,7 @@ export default function ChatComposer({
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
               placeholder={placeholder}
+              disabled={isHeldExternally}
             />
         </PromptInputBody>
 
@@ -449,6 +460,7 @@ export default function ChatComposer({
               tooltip={{ content: t('input.showAllCommands') }}
               onClick={onToggleCommandMenu}
               className="relative"
+              disabled={isHeldExternally}
             >
               <MessageSquareIcon />
               {slashCommandsCount > 0 && (
@@ -512,13 +524,15 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isLoading
-                  ? false
-                  : isRecording
+                isHeldExternally
+                  ? true
+                  : isLoading
                     ? false
-                    : isTranscribing
-                      ? true
-                      : !input.trim() && attachedFiles.length === 0
+                    : isRecording
+                      ? false
+                      : isTranscribing
+                        ? true
+                        : !input.trim() && attachedFiles.length === 0
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}

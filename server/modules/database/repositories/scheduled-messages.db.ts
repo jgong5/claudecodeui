@@ -99,6 +99,16 @@ export const scheduledMessagesDb = {
     })();
   },
 
+  /** Puts a claimed message back to pending, for a send refused only until its session frees up. */
+  releaseClaim(id: string): void {
+    getConnection()
+      .prepare(
+        `UPDATE scheduled_messages SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'sent'`
+      )
+      .run(id);
+  },
+
   markFailed(id: string, reason: string): void {
     getConnection()
       .prepare(

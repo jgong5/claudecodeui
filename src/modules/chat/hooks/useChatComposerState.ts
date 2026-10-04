@@ -245,6 +245,9 @@ export function useChatComposerState({
   // to currentSessionId for a just-established session that hasn't been
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
+  // Another Claude process (a terminal `claude`, an IDE) holds the session:
+  // nothing is sent from here, slash commands included, until it lets go.
+  const isHeldExternally = Boolean(sessionKey && processingSessions?.get(sessionKey)?.external);
   // The chat scope a draft belongs to: the open session, or the project for a
   // chat that has not been sent yet and so has no session id. Drafts used to be
   // keyed by project alone, so every session in a project shared one draft.
@@ -422,7 +425,7 @@ export function useChatComposerState({
 
   const executeCommand = useCallback(
     async (command: SlashCommand, rawInput?: string, options?: { preserveInput?: boolean }) => {
-      if (!command || !selectedProject) {
+      if (!command || !selectedProject || isHeldExternally) {
         return;
       }
 
@@ -487,6 +490,7 @@ export function useChatComposerState({
       handleBuiltInCommand,
       handleCustomCommand,
       input,
+      isHeldExternally,
       provider,
       selectedProject,
       selectedSession?.id,
@@ -688,6 +692,7 @@ export function useChatComposerState({
           && previouslyUploadedAttachments.length === 0
         )
         || !selectedProject
+        || isHeldExternally
       ) {
         return;
       }
@@ -972,6 +977,7 @@ export function useChatComposerState({
       currentSessionId,
       editingAnchorId,
       executeCommand,
+      isHeldExternally,
       isLoading,
       onSessionProcessing,
       onSessionEstablished,

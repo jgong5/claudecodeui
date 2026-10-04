@@ -5,7 +5,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
-import { listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
+import { isSessionHeldExternally, listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
   BackgroundTaskSummary,
@@ -687,6 +687,8 @@ export const sessionsService = {
    * Soft-delete mirrors the project behavior by toggling `isArchived` so the
    * row disappears from active lists but remains restorable. Force-delete
    * optionally removes the transcript file before deleting the database row.
+   * Force-delete is refused while another Claude process holds the session:
+   * it would delete the transcript that process is still writing.
    */
   async deleteOrArchiveSessionById(
     sessionId: string,
@@ -710,6 +712,13 @@ export const sessionsService = {
         action: 'archived',
         deletedFromDisk: false,
       };
+    }
+
+    if (await isSessionHeldExternally(sessionId)) {
+      throw new AppError(`Session "${sessionId}" is held by another Claude process.`, {
+        code: 'SESSION_HELD_EXTERNALLY',
+        statusCode: 409,
+      });
     }
 
     let removedFromDisk = false;

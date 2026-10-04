@@ -147,3 +147,15 @@ export async function listExternalClaudeCliSessions(): Promise<ExternalClaudeCli
   }
   return external;
 }
+
+/**
+ * Whether a Claude process this server's runtime does not hold is alive on
+ * the session, busy or idle.
+ *
+ * Used by the websocket module's chat gateway, which refuses to start a second
+ * process resuming the same transcript beside it, and by the sessions service,
+ * which refuses to delete the session under it.
+ */
+export async function isSessionHeldExternally(sessionId: string): Promise<boolean> {
+  return (await listExternalClaudeCliSessions()).some((live) => live.sessionId === sessionId);
+}
