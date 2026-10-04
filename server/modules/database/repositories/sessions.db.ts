@@ -2,6 +2,16 @@ import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
 
+/**
+ * Who last set a session's name, stored in `sessions.name_source`. Used by the
+ * Claude synchronizer to decide whether transcript titles may replace it.
+ *
+ * `web` is a rename in this app, `cli` is a `/rename` in the CLI (a transcript
+ * `custom-title`), and `derived` is a name the app or a synchronizer computed.
+ * NULL in the database marks a row from before the column existed.
+ */
+export type SessionNameSource = 'web' | 'cli' | 'derived';
+
 type SessionRow = {
   session_id: string;
   provider: string;
@@ -9,6 +19,12 @@ type SessionRow = {
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
+  // Optional because only the Claude synchronizer reads them; every row read
+  // from the database carries both.
+  /** Who last set `custom_name`; NULL on rows that predate the column. */
+  name_source?: SessionNameSource | null;
+  /** The last transcript `custom-title` a synchronizer applied or recorded. */
+  last_custom_title?: string | null;
   /** Model this session runs with; NULL until the app records one for it. */
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
@@ -26,7 +42,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, last_custom_title, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -79,6 +95,10 @@ export const sessionsDb = {
    * transcript shows up on disk, instead of producing a duplicate row. An
    * app-created row keeps its existing name; synchronizer names only update
    * rows that were themselves created by indexing provider storage.
+   *
+   * Passing `naming` means the synchronizer has already decided the name
+   * against the row's `name_source`: `customName` is then written as given,
+   * on app-created rows too, along with both naming columns.
    */
   createSession(
     providerSessionId: string,
@@ -87,7 +107,8 @@ export const sessionsDb = {
     customName?: string,
     createdAt?: string,
     updatedAt?: string,
-    jsonlPath?: string | null
+    jsonlPath?: string | null,
+    naming?: { nameSource: SessionNameSource; lastCustomTitle: string | null }
   ): string {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
@@ -115,9 +136,12 @@ export const sessionsDb = {
            jsonl_path = ?,
            isArchived = CASE WHEN ? IS NULL OR julianday(?) > julianday(updated_at) THEN 0 ELSE isArchived END,
            custom_name = CASE
+             WHEN ? IS NOT NULL THEN ?
              WHEN session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
              ELSE COALESCE(?, custom_name)
-           END
+           END,
+           name_source = COALESCE(?, name_source),
+           last_custom_title = CASE WHEN ? IS NOT NULL THEN ? ELSE last_custom_title END
          WHERE session_id = ?`
       ).run(
         provider,
@@ -126,7 +150,12 @@ export const sessionsDb = {
         jsonlPath ?? null,
         updatedAtValue,
         updatedAtValue,
+        naming?.nameSource ?? null,
         customName ?? null,
+        customName ?? null,
+        naming?.nameSource ?? null,
+        naming?.nameSource ?? null,
+        naming?.lastCustomTitle ?? null,
         existing.session_id
       );
 
@@ -137,8 +166,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, last_custom_title, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -147,15 +176,23 @@ export const sessionsDb = {
          jsonl_path = excluded.jsonl_path,
          isArchived = CASE WHEN ? IS NULL OR julianday(excluded.updated_at) > julianday(sessions.updated_at) THEN 0 ELSE sessions.isArchived END,
          custom_name = CASE
+           WHEN excluded.name_source IS NOT NULL THEN excluded.custom_name
            WHEN sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
              THEN sessions.custom_name
            ELSE COALESCE(excluded.custom_name, sessions.custom_name)
+         END,
+         name_source = COALESCE(excluded.name_source, sessions.name_source),
+         last_custom_title = CASE
+           WHEN excluded.name_source IS NOT NULL THEN excluded.last_custom_title
+           ELSE sessions.last_custom_title
          END`
     ).run(
       providerSessionId,
       provider,
       providerSessionId,
       customName ?? null,
+      naming?.nameSource ?? null,
+      naming?.lastCustomTitle ?? null,
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,
@@ -173,7 +210,8 @@ export const sessionsDb = {
    * `session_id` is the stable app-facing id, while `provider_session_id`
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping. `customName` is derived
-   * from the first visible CloudCLI message by the sessions service.
+   * from the first visible CloudCLI message by the sessions service, so the
+   * row starts as `derived` and transcript titles may replace it.
    */
   createAppSession(
     sessionId: string,
@@ -187,8 +225,8 @@ export const sessionsDb = {
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, 'derived', ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
     ).run(sessionId, provider, customName ?? null, normalizedProjectPath);
 
     return sessionId;
@@ -225,8 +263,8 @@ export const sessionsDb = {
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, input.sessionId);
       db.prepare(
-        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'derived', ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       ).run(
         input.sessionId,
         input.provider,
@@ -248,8 +286,9 @@ export const sessionsDb = {
    *
    * If the filesystem watcher indexed the provider transcript before this
    * mapping was recorded (a duplicate row keyed by the provider id exists),
-   * the duplicate is merged into the app row: its transcript path and name
-   * are adopted and the duplicate row is removed. Runs in a transaction so
+   * the duplicate is merged into the app row: its transcript path is adopted,
+   * its name only when the app row has none (the naming columns travel with
+   * the name), and the duplicate row is removed. Runs in a transaction so
    * the sidebar can never observe both rows at once.
    */
   assignProviderSessionId(sessionId: string, providerSessionId: string): void {
@@ -272,9 +311,18 @@ export const sessionsDb = {
              provider_session_id = ?,
              jsonl_path = COALESCE(jsonl_path, ?),
              custom_name = COALESCE(custom_name, ?),
+             name_source = CASE WHEN custom_name IS NULL THEN ? ELSE name_source END,
+             last_custom_title = CASE WHEN custom_name IS NULL THEN ? ELSE last_custom_title END,
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
-        ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
+        ).run(
+          providerSessionId,
+          duplicate.jsonl_path,
+          duplicate.custom_name,
+          duplicate.name_source ?? null,
+          duplicate.last_custom_title ?? null,
+          sessionId,
+        );
         return;
       }
 
@@ -439,11 +487,15 @@ export const sessionsDb = {
     ).run(effort, sessionId);
   },
 
+  /**
+   * Renames one session as the user's own choice: the name becomes `web`, so
+   * transcript titles no longer replace it until a newer CLI `/rename`.
+   */
   updateSessionCustomName(sessionId: string, customName: string): void {
     const db = getConnection();
     db.prepare(
       `UPDATE sessions
-       SET custom_name = ?
+       SET custom_name = ?, name_source = 'web'
        WHERE session_id = ?`
     ).run(customName, sessionId);
   },

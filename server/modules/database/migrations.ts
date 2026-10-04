@@ -457,6 +457,19 @@ const addSessionEffortColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'effort', 'TEXT');
 };
 
+/**
+ * Adds `name_source` and `last_custom_title`, which let transcript titles
+ * update a session's name without overwriting a rename made in the app.
+ *
+ * Nothing is backfilled: a NULL `name_source` is classified by the Claude
+ * synchronizer the next time it indexes that session.
+ */
+const addSessionNameSourceColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'name_source', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'last_custom_title', 'TEXT');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -519,6 +532,7 @@ export const runMigrations = (db: Database) => {
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addForkedFromSessionIdColumn(db);
+    addSessionNameSourceColumns(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 
