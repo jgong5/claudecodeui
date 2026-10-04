@@ -470,6 +470,15 @@ const addSessionNameSourceColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'last_custom_title', 'TEXT');
 };
 
+/**
+ * Adds `entrypoint`, which the Claude synchronizer fills from a transcript so
+ * the sidebar can say how a session started outside the app was launched.
+ */
+const addSessionEntrypointColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'entrypoint', 'TEXT');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -533,6 +542,7 @@ export const runMigrations = (db: Database) => {
     addSessionEffortColumn(db);
     addForkedFromSessionIdColumn(db);
     addSessionNameSourceColumns(db);
+    addSessionEntrypointColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

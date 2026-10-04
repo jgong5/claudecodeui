@@ -1,5 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
+import type { SessionOrigin } from '@/shared/types.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
 
 /**
@@ -31,6 +32,12 @@ type SessionRow = {
   effort: string | null;
   /** The app session this one was branched from; NULL unless it is a fork. */
   forked_from_session_id: string | null;
+  // Optional so test stubs need not carry them; every row read from the
+  // database does.
+  /** How the provider CLI was started, from the transcript; NULL when unknown. */
+  entrypoint?: string | null;
+  /** Not a column: derived from the two ids when the row is read. */
+  origin?: SessionOrigin;
   isArchived: number;
   created_at: string;
   updated_at: string;
@@ -42,7 +49,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, last_custom_title, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, last_custom_title, model, effort, forked_from_session_id, entrypoint, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -71,6 +78,8 @@ function normalizeSessionRow<T extends SessionRow | null | undefined>(row: T): T
 
   return {
     ...row,
+    // A row the app created has its own id; one indexed from disk reuses the provider's.
+    origin: row.provider_session_id && row.provider_session_id === row.session_id ? 'external' : 'app',
     created_at: normalizeTimestamp(row.created_at) ?? row.created_at,
     updated_at: normalizeTimestamp(row.updated_at) ?? row.updated_at,
   };
@@ -99,6 +108,9 @@ export const sessionsDb = {
    * Passing `naming` means the synchronizer has already decided the name
    * against the row's `name_source`: `customName` is then written as given,
    * on app-created rows too, along with both naming columns.
+   *
+   * `entrypoint` is how the transcript says its CLI was started; a NULL keeps
+   * the stored one.
    */
   createSession(
     providerSessionId: string,
@@ -108,7 +120,8 @@ export const sessionsDb = {
     createdAt?: string,
     updatedAt?: string,
     jsonlPath?: string | null,
-    naming?: { nameSource: SessionNameSource; lastCustomTitle: string | null }
+    naming?: { nameSource: SessionNameSource; lastCustomTitle: string | null },
+    entrypoint?: string | null
   ): string {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
@@ -141,7 +154,8 @@ export const sessionsDb = {
              ELSE COALESCE(?, custom_name)
            END,
            name_source = COALESCE(?, name_source),
-           last_custom_title = CASE WHEN ? IS NOT NULL THEN ? ELSE last_custom_title END
+           last_custom_title = CASE WHEN ? IS NOT NULL THEN ? ELSE last_custom_title END,
+           entrypoint = COALESCE(?, entrypoint)
          WHERE session_id = ?`
       ).run(
         provider,
@@ -156,6 +170,7 @@ export const sessionsDb = {
         naming?.nameSource ?? null,
         naming?.nameSource ?? null,
         naming?.lastCustomTitle ?? null,
+        entrypoint ?? null,
         existing.session_id
       );
 
@@ -166,8 +181,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, last_custom_title, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, last_custom_title, entrypoint, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -185,7 +200,8 @@ export const sessionsDb = {
          last_custom_title = CASE
            WHEN excluded.name_source IS NOT NULL THEN excluded.last_custom_title
            ELSE sessions.last_custom_title
-         END`
+         END,
+         entrypoint = COALESCE(excluded.entrypoint, sessions.entrypoint)`
     ).run(
       providerSessionId,
       provider,
@@ -193,6 +209,7 @@ export const sessionsDb = {
       customName ?? null,
       naming?.nameSource ?? null,
       naming?.lastCustomTitle ?? null,
+      entrypoint ?? null,
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,

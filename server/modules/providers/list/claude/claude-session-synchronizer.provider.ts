@@ -20,6 +20,8 @@ type ParsedSession = {
   projectPath: string;
   sessionName: string;
   naming: { nameSource: SessionNameSource; lastCustomTitle: string | null };
+  /** How the CLI was started (`cli`, `sdk-ts`), from the transcript's first row. */
+  entrypoint: string | null;
 };
 
 type TranscriptTitles = {
@@ -85,7 +87,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         timestamps.createdAt,
         timestamps.updatedAt,
         filePath,
-        parsed.naming
+        parsed.naming,
+        parsed.entrypoint
       );
       processed += 1;
     }
@@ -119,7 +122,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.createdAt,
       timestamps.updatedAt,
       filePath,
-      parsed.naming
+      parsed.naming,
+      parsed.entrypoint
     );
   }
 
@@ -150,6 +154,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return {
         sessionId,
         projectPath,
+        entrypoint: typeof data.entrypoint === 'string' ? data.entrypoint : null,
       };
     });
 
