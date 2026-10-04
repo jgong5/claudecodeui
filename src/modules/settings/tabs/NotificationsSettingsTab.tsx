@@ -219,23 +219,43 @@ export default function NotificationsSettingsTab({
             {t('notifications.events.actionRequired')}
           </label>
 
-          <label className="flex items-center gap-2 text-sm text-foreground">
-            <input
-              type="checkbox"
-              checked={notificationPreferences.events.stop}
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={notificationPreferences.events.stop}
+                onChange={(event) =>
+                  onNotificationPreferencesChange({
+                    ...notificationPreferences,
+                    events: {
+                      ...notificationPreferences.events,
+                      stop: event.target.checked,
+                    },
+                  })
+                }
+                className="h-4 w-4"
+              />
+              {t('notifications.events.stop')}
+            </label>
+            <select
+              value={notificationPreferences.events.stopTiming}
+              disabled={!notificationPreferences.events.stop}
               onChange={(event) =>
                 onNotificationPreferencesChange({
                   ...notificationPreferences,
                   events: {
                     ...notificationPreferences.events,
-                    stop: event.target.checked,
+                    stopTiming: event.target.value as NotificationPreferencesState['events']['stopTiming'],
                   },
                 })
               }
-              className="h-4 w-4"
-            />
-            {t('notifications.events.stop')}
-          </label>
+              aria-label={t('notifications.events.stopTiming.label')}
+              className="rounded-lg border border-input bg-card p-1.5 text-sm text-foreground disabled:opacity-50"
+            >
+              <option value="everyTurn">{t('notifications.events.stopTiming.everyTurn')}</option>
+              <option value="whenIdle">{t('notifications.events.stopTiming.whenIdle')}</option>
+            </select>
+          </div>
 
           <label className="flex items-center gap-2 text-sm text-foreground">
             <input

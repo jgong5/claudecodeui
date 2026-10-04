@@ -1425,6 +1425,8 @@ export type NotificationPreferencesState = {
     actionRequired: boolean;
     stop: boolean;
     error: boolean;
+    /** When a completed turn notifies: right away, or once the session has no work left running. */
+    stopTiming: 'everyTurn' | 'whenIdle';
   };
 };
 
