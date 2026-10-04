@@ -204,6 +204,17 @@ export async function initializeSessionsWatcher(): Promise<void> {
     failures: initialSync.failures,
   });
 
+  // Not awaited: renamed rows reach clients like any watcher update, and
+  // startup does not wait for the transcripts to be read.
+  void sessionSynchronizerService.synchronizeUnclassifiedClaudeSessions().then((sessionIds) => {
+    for (const sessionId of sessionIds) {
+      queuePendingWatcherUpdate('change', 'claude', sessionId);
+    }
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Re-syncing unclassified Claude sessions failed', { error: message });
+  });
+
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
