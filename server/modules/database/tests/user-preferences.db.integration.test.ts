@@ -8,6 +8,7 @@ import {
   closeConnection,
   getConnection,
   initializeDatabase,
+  notificationPreferencesDb,
   sessionDraftsDb,
   userPreferencesDb,
 } from '@/modules/database/index.js';
@@ -90,6 +91,18 @@ test('one unreadable preference value does not cost the user the others', async 
       .run(USER_ID, 'broken', 'not json');
 
     assert.deepEqual(userPreferencesDb.getPreferences(USER_ID), { theme: 'dark' });
+  });
+});
+
+test('notification stop timing survives a save and read', async () => {
+  await withDatabase(() => {
+    const saved = notificationPreferencesDb.getNotificationPreferences(USER_ID);
+    notificationPreferencesDb.updateNotificationPreferences(USER_ID, {
+      ...saved,
+      events: { ...saved.events, stopTiming: 'whenIdle' },
+    });
+
+    assert.equal(notificationPreferencesDb.getNotificationPreferences(USER_ID).events.stopTiming, 'whenIdle');
   });
 });
 

@@ -680,8 +680,8 @@ test('a result while a pushed message is queued arms no ceiling over scheduled p
 
 /**
  * Records the code of every notification sent, with web push the one channel
- * on. Notices are deduplicated per session for 20s, so each test that records
- * them runs its own session id.
+ * on. Notices are deduplicated per session within a time window, so each test
+ * that records them runs its own session id.
  */
 function recordNotices(t: TestContext, stopTiming: 'everyTurn' | 'whenIdle'): string[] {
   const codes: string[] = [];

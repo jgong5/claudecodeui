@@ -975,6 +975,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     });
   };
 
+  const notifyStopped = (stopReason) => {
+    notifyRunStopped({
+      userId: ws?.userId || null,
+      provider: 'claude',
+      sessionId: sessionId || capturedSessionId || null,
+      sessionName: sessionSummary,
+      stopReason
+    });
+  };
+
   // Closes the held stdin stream so the CLI can wind down. Replaced once the
   // stream exists; the finally block calls it no matter how the run ends.
   let releasePromptStream = () => {};
@@ -1496,13 +1506,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         if (abortPending) {
           stopNoticeDeferred = false;
           settleTurn();
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'aborted'
-          });
+          notifyStopped('aborted');
         } else if (!turnCompleteSent) {
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
@@ -1511,27 +1515,13 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
           // prompts (hours off, maybe) or a TaskCreate that never reports back.
           stopNoticeDeferred = stillOutstanding && stopNoticeWaitsForIdle(ws?.userId || null);
           if (!stopNoticeDeferred) {
-            notifyRunStopped({
-              userId: ws?.userId || null,
-              provider: 'claude',
-              sessionId: sessionId || capturedSessionId || null,
-              sessionName: sessionSummary,
-              stopReason: 'completed'
-            });
+            notifyStopped('completed');
           }
-        } else if (stopNoticeDeferred) {
+        } else if (stopNoticeDeferred && !stillOutstanding) {
           // The held notice stands in for "background work finished", once
           // the last tracked task has reported back.
-          if (!stillOutstanding) {
-            stopNoticeDeferred = false;
-            notifyRunStopped({
-              userId: ws?.userId || null,
-              provider: 'claude',
-              sessionId: sessionId || capturedSessionId || null,
-              sessionName: sessionSummary,
-              stopReason: 'completed'
-            });
-          }
+          stopNoticeDeferred = false;
+          notifyStopped('completed');
         } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
           // A result after the turn already reported complete means the work we
           // held the process open for has finished and pushed a follow-up turn
@@ -1612,23 +1602,11 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       if (!wasAborted) {
         ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
       }
-      notifyRunStopped({
-        userId: ws?.userId || null,
-        provider: 'claude',
-        sessionId: sessionId || capturedSessionId || null,
-        sessionName: sessionSummary,
-        stopReason: wasAborted ? 'aborted' : 'completed'
-      });
+      notifyStopped(wasAborted ? 'aborted' : 'completed');
     } else if (stopNoticeDeferred && !superseded && !wasAborted) {
       // The held work never reported and the process ended anyway (the
       // silence ceiling, say): the session is idle now.
-      notifyRunStopped({
-        userId: ws?.userId || null,
-        provider: 'claude',
-        sessionId: sessionId || capturedSessionId || null,
-        sessionName: sessionSummary,
-        stopReason: 'completed'
-      });
+      notifyStopped('completed');
     }
     // Complete
 
