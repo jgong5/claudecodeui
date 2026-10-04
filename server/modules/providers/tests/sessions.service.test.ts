@@ -471,9 +471,10 @@ test('a live registry entry does not duplicate a session the runtime holds for b
     sessionsDb.assignProviderSessionId('held-session', 'claude-native-held');
     const tasks = [task('agent', 1_000)];
 
-    // The runtime's own process writes a registry entry too.
+    // The runtime's own process writes a registry entry too, busy while it
+    // answers a task's notification in a turn of its own.
     await withClaudeCliRegistry(
-      [{ pid: process.pid, sessionId: 'claude-native-held', status: 'idle', startedAt: 500 }],
+      [{ pid: process.pid, sessionId: 'claude-native-held', status: 'busy', startedAt: 500 }],
       async () => await withProviders(
         { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'held-session', tasks }] } },
         async () => {
