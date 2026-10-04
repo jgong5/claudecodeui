@@ -326,6 +326,9 @@ export function useChatSessionState({
   // indicator but is not a response in flight: the composer can send.
   const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
   const isProcessing = sessionActivity !== null && !sessionActivity.background;
+  // A session an external Claude process holds streams nothing here, so a
+  // reload is the only way its transcript moves, busy or not.
+  const isExternalSession = Boolean(sessionActivity?.external);
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
 
   // Ref mirror so effects can read the latest map without re-running on
@@ -820,7 +823,7 @@ export function useChatSessionState({
     const reloadExternalMessages = async () => {
       try {
         // Skip store refresh during active streaming
-        if (!isProcessing) {
+        if (!isProcessing || isExternalSession) {
           const shouldStickToBottom = isActiveRef.current && isNearBottom();
           await requestLatestMessages(selectedSession.id);
 
@@ -845,6 +848,7 @@ export function useChatSessionState({
     selectedProject,
     selectedSession,
     isProcessing,
+    isExternalSession,
   ]);
 
   // Search navigation target

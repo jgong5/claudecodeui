@@ -207,6 +207,12 @@ export type SessionActivity = {
   tasks?: BackgroundTaskSummary[];
   /** The prompts the session's process has scheduled, from the running-sessions poll. */
   crons?: SessionCronSummary[];
+  /**
+   * Set when a Claude process this server did not spawn holds the session (a
+   * terminal `claude`, an IDE). Nothing streams here and nothing here can stop
+   * its work: the transcript reaches this client only by reloading.
+   */
+  external?: boolean;
 };
 
 /** Every busy session, keyed by session id. Read it to tell whether a session is busy; check `background` to tell how. */
@@ -238,7 +244,7 @@ export type SyncProcessingSessions = (
   sessions: readonly SessionActivitySnapshot[],
 ) => void;
 
-/** Reports whether one session is currently producing a response; false for one that only has background tasks running. */
+/** Reports whether one session is currently producing a response that streams to this client; false for one that only has background tasks running, and for one an external Claude process holds. */
 export type IsSessionProcessing = (sessionId?: string | null) => boolean;
 
 /** One running session as reported by the server, before it is folded into the client-side activity map. */
@@ -252,6 +258,8 @@ export type SessionActivitySnapshot = {
   tasks?: BackgroundTaskSummary[];
   /** The prompts the session's live process has scheduled, as its last turn's Stop hook listed them. */
   crons?: SessionCronSummary[];
+  /** True when a Claude process this server did not spawn holds the session. */
+  external?: boolean;
 };
 
 // ---------------------------
@@ -591,6 +599,8 @@ export type NormalizedMessage = {
   subagent?: SubagentInfo;
   /** The workflow run a `Workflow` call launched, attached by the backend from the run's journal. */
   workflow?: WorkflowInfo;
+  /** Where the backgrounded command or monitor this call launched stands, as the backend read it from history. */
+  backgroundStatus?: BackgroundTaskStatus;
   /** Stored memory this reply drew on, when the provider reports it. */
   memoryCitations?: MemoryCitation[];
   isFinal?: boolean;

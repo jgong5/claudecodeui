@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
@@ -376,6 +377,7 @@ test('running sessions report a turn driven by the Claude CLI', { concurrency: f
             startedAt: 4_000,
             lastSeq: 0,
             canInterrupt: false,
+            external: true,
             statusText: 'Running in the Claude CLI',
           }]);
         },
@@ -384,22 +386,33 @@ test('running sessions report a turn driven by the Claude CLI', { concurrency: f
   });
 });
 
-test('running sessions ignore registry files a crash left behind', { concurrency: false }, async () => {
+test('running sessions ignore registry files a crash left behind and list idle live ones', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('stale-session', 'claude', '/tmp/running-project');
     sessionsDb.assignProviderSessionId('stale-session', 'claude-native-stale');
+    sessionsDb.createAppSession('idle-session', 'claude', '/tmp/running-project');
+    sessionsDb.assignProviderSessionId('idle-session', 'claude-native-idle');
 
     await withClaudeCliRegistry(
       [
         // The process is gone: signal 0 cannot find this pid.
         { pid: 4_194_302, sessionId: 'claude-native-stale', status: 'busy', startedAt: 1_000 },
-        // Alive, but waiting for input rather than producing a response.
+        // Alive, but waiting for input: its turn has ended, its background
+        // work may not have.
         { pid: process.pid, sessionId: 'claude-native-idle', status: 'idle', startedAt: 2_000 },
       ],
       async () => await withProviders(
         { claude: { run: async () => undefined, abort: () => false } },
         async () => {
-          assert.deepEqual(await sessionsService.listRunningSessions(), []);
+          assert.deepEqual(await sessionsService.listRunningSessions(), [{
+            sessionId: 'idle-session',
+            provider: 'claude',
+            startedAt: 2_000,
+            lastSeq: 0,
+            canInterrupt: false,
+            external: true,
+            background: true,
+          }]);
         },
       ),
     );
@@ -450,4 +463,86 @@ test('an unreadable registry never fails the running-sessions poll', { concurren
       },
     );
   });
+});
+
+test('a live registry entry does not duplicate a session the runtime holds for background work', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('held-session', 'claude', '/tmp/running-project');
+    sessionsDb.assignProviderSessionId('held-session', 'claude-native-held');
+    const tasks = [task('agent', 1_000)];
+
+    // The runtime's own process writes a registry entry too, busy while it
+    // answers a task's notification in a turn of its own.
+    await withClaudeCliRegistry(
+      [{ pid: process.pid, sessionId: 'claude-native-held', status: 'busy', startedAt: 500 }],
+      async () => await withProviders(
+        { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'held-session', tasks }] } },
+        async () => {
+          const sessions = await sessionsService.listRunningSessions();
+          assert.equal(sessions.length, 1, 'the runtime\'s entry covers this session');
+          assert.equal(sessions[0].external, undefined);
+          assert.deepEqual(sessions[0].tasks, tasks);
+        },
+      ),
+    );
+  });
+});
+
+test('an idle external process with an unreported background Bash reads as running work', { concurrency: false }, async () => {
+  const projectDirectory = await mkdtemp(path.join(os.tmpdir(), 'external-session-'));
+  const sessionId = 'claude-native-external';
+  const processStartedAt = Date.parse('2026-10-03T10:00:00.000Z');
+  // A launch row: the call, then the acknowledgement carrying `toolUseResult`.
+  const launch = (toolUseId: string, name: string, at: string, toolUseResult: Record<string, unknown>) => [
+    {
+      type: 'assistant', uuid: `${toolUseId}-call`, sessionId, timestamp: at,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name, input: { description: name } }] },
+    },
+    {
+      type: 'user', uuid: `${toolUseId}-ack`, sessionId, timestamp: at,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: `${name} started` }] },
+      toolUseResult,
+    },
+  ];
+  const rows = [
+    // Launched by an earlier process of the same session, which has exited.
+    ...launch('toolu_old_monitor', 'Monitor', '2026-10-03T09:00:00.000Z', { taskId: 'bold0001', timeoutMs: 300_000, persistent: false }),
+    // Launched by the live external process, and not reported yet.
+    ...launch('toolu_bash', 'Bash', '2026-10-03T10:05:00.000Z', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bnew0001' }),
+  ];
+  const transcriptPath = path.join(projectDirectory, `${sessionId}.jsonl`);
+  await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', projectDirectory, 'External session', now, now, transcriptPath);
+
+      await withClaudeCliRegistry(
+        [{ pid: process.pid, sessionId, status: 'idle', startedAt: processStartedAt }],
+        async () => await withProviders(
+          { claude: { run: async () => undefined, abort: () => false } },
+          async () => {
+            assert.deepEqual(await sessionsService.listRunningSessions(), [{
+              sessionId,
+              provider: 'claude',
+              startedAt: processStartedAt,
+              lastSeq: 0,
+              canInterrupt: false,
+              external: true,
+              background: true,
+            }]);
+
+            const history = await new ClaudeSessionsProvider().fetchHistory(sessionId, { providerSessionId: sessionId });
+            const statusOf = (toolId: string) => history.messages
+              .find((message) => message.kind === 'tool_use' && message.toolId === toolId)?.backgroundStatus;
+            assert.equal(statusOf('toolu_bash'), 'running');
+            assert.equal(statusOf('toolu_old_monitor'), 'stopped');
+          },
+        ),
+      );
+    });
+  } finally {
+    await rm(projectDirectory, { recursive: true, force: true });
+  }
 });

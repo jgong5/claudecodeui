@@ -31,6 +31,7 @@ import {
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { summarizeClaudeTokenUsage } from '@/modules/providers/services/provider-token-usage.service.js';
 
 const PROVIDER = 'claude';
@@ -65,6 +66,7 @@ type ClaudeToolResult = {
   subagentTools?: SubagentActivity[];
   subagent?: SubagentInfo;
   workflow?: WorkflowInfo;
+  backgroundStatus?: NormalizedMessage['backgroundStatus'];
   toolUseResult?: unknown;
 };
 
@@ -306,15 +308,16 @@ async function readWorkflowJournal(transcriptDir: string): Promise<WorkflowAgent
  * Which kind of background work a tool-result row launched, read off the
  * structured `toolUseResult` the CLI stores beside it.
  *
- * All three answer the same way — a launch acknowledgement now, a
+ * All four answer the same way — a launch acknowledgement now, a
  * `<task-notification>` later — but each is recognised by its own key: an
  * `Agent` by the `agentId` of the transcript it writes, a `Workflow` by the
  * `async_launched` status it shares with an agent launch (it has no agent of
- * its own), and a backgrounded `Bash` by the `backgroundTaskId` the shell
- * reports. A synchronous `Agent` also carries `agentId` and is included here
+ * its own), a backgrounded `Bash` by the `backgroundTaskId` the shell
+ * reports, and a `Monitor` by the `taskId` and `timeoutMs` it acknowledges
+ * with. A synchronous `Agent` also carries `agentId` and is included here
  * because its card is built the same way; only `isAsync` says it launched.
  */
-type ClaudeBackgroundLaunch = 'agent' | 'workflow' | 'bash';
+type ClaudeBackgroundLaunch = 'agent' | 'workflow' | 'bash' | 'monitor';
 
 function readBackgroundLaunch(toolUseResult: unknown): ClaudeBackgroundLaunch | null {
   const result = readObjectRecord(toolUseResult);
@@ -329,6 +332,9 @@ function readBackgroundLaunch(toolUseResult: unknown): ClaudeBackgroundLaunch | 
   }
   if (typeof result.backgroundTaskId === 'string' && result.backgroundTaskId) {
     return 'bash';
+  }
+  if (typeof result.taskId === 'string' && result.taskId && typeof result.timeoutMs === 'number') {
+    return 'monitor';
   }
   return null;
 }
@@ -785,8 +791,12 @@ async function getSessionMessages(
     // than the live run belongs to a process that has already exited. The
     // runtime keys its process map by the app session id when the chat gateway
     // starts a run and by the provider-native id when the agent API does, so
-    // both are asked.
-    const liveRunStartedAt = getLiveRunStartTime(sessionId) ?? getLiveRunStartTime(providerSessionId);
+    // both are asked. Short of a process of its own, the session may be held
+    // by a Claude process this server did not spawn, which reports the same way.
+    const liveRunStartedAt = getLiveRunStartTime(sessionId)
+      ?? getLiveRunStartTime(providerSessionId)
+      ?? (await listExternalClaudeCliSessions()).find((live) => live.sessionId === sessionId)?.startedAt
+      ?? null;
     const launchedByLiveRun = (message: AnyRecord): boolean =>
       liveRunStartedAt !== null && Date.parse(String(message.timestamp ?? '')) >= liveRunStartedAt;
 
@@ -884,6 +894,12 @@ async function getSessionMessages(
           },
           scriptPath: typeof message.toolUseResult.scriptPath === 'string' ? message.toolUseResult.scriptPath : undefined,
         };
+      } else {
+        // A backgrounded command or monitor has no card of its own to carry a
+        // status, so it rides on the row as `backgroundStatus`.
+        message.backgroundStatus = notification
+          ? notification.status === 'completed' || notification.status === 'stopped' ? notification.status : 'failed'
+          : unreportedStatus;
       }
 
       if (notification) {
@@ -891,12 +907,13 @@ async function getSessionMessages(
         for (const sourceUuid of notification.sourceUuids) {
           foldedNotificationUuids.add(sourceUuid);
         }
-      } else if (isAsyncLaunch && launch !== 'bash') {
+      } else if (launch === 'workflow' || (launch === 'agent' && isAsyncLaunch)) {
         // Without a notification there is no answer to show, and an agent's
         // or workflow's launch acknowledgement is internal bookkeeping the
-        // user must never read. A backgrounded command's acknowledgement is
-        // different: it names the output file, which is the only handle on
-        // the command's output until it reports, so it stays.
+        // user must never read. A backgrounded command's or monitor's
+        // acknowledgement is different: it names the output file or the
+        // monitor's timeout, the only handle on the work until it reports, so
+        // it stays.
         replaceLaunchToolResultContent(message, '');
       }
     }
@@ -1761,6 +1778,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               subagentTools: raw.subagentTools,
               subagent: raw.subagent,
               workflow: raw.workflow,
+              backgroundStatus: raw.backgroundStatus,
               toolUseResult: raw.toolUseResult,
             });
           }
@@ -1790,6 +1808,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         msg.subagentTools = toolResult.subagentTools;
         msg.subagent = toolResult.subagent;
         msg.workflow = toolResult.workflow;
+        if (toolResult.backgroundStatus) {
+          msg.backgroundStatus = toolResult.backgroundStatus;
+        }
       }
     }
 

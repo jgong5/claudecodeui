@@ -86,3 +86,33 @@ test('one task entry in a shape the client does not read hides only itself', asy
   await waitFor(() => assert.ok(result.current.get('held-session')));
   assert.deepEqual(result.current.get('held-session')?.tasks?.map((task) => task.taskId), ['w1']);
 });
+
+test('a session an external Claude process holds is carried as external, and never as a response streaming here', async () => {
+  runningSessions.mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      data: {
+        sessions: [{
+          sessionId: 'external-session',
+          provider: 'claude',
+          startedAt: 1_700_000_000_000,
+          lastSeq: 0,
+          canInterrupt: false,
+          external: true,
+          statusText: 'Running in the Claude CLI',
+        }],
+      },
+    }),
+  });
+
+  const { SessionProtectionProvider, useProcessingSessions, useSessionProtectionActions } = await import('@/shared/context/SessionProtectionContext');
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(SessionProtectionProvider, null, children);
+  const { result } = renderHook(() => ({ sessions: useProcessingSessions(), actions: useSessionProtectionActions() }), { wrapper });
+
+  await waitFor(() => assert.ok(result.current.sessions.get('external-session')));
+  assert.equal(result.current.sessions.get('external-session')?.external, true);
+  // So a transcript change on disk reloads the view instead of waiting for a
+  // stream that will never arrive.
+  assert.equal(result.current.actions.isSessionProcessing('external-session'), false);
+});

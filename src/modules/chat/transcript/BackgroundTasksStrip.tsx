@@ -30,6 +30,8 @@ type BackgroundTasksStripProps = {
   crons?: SessionCronSummary[];
   /** The session the tasks belong to, which `chat.stop-task` names; null before one exists. */
   sessionId: string | null;
+  /** A Claude process this server did not spawn holds the session, so nothing here can stop its tasks. */
+  external?: boolean;
   /** The chat websocket's send, for stopping a task. */
   sendMessage: (message: unknown) => void;
   /**
@@ -103,17 +105,18 @@ function describeTask(message: ChatMessage, t: TFunction) {
 /**
  * Rendered by chat's ChatMessagesPane above the transcript: one chip per
  * background task — workflow, agent, command or monitor — that is still
- * running, each scrolling to its card when clicked and stoppable from its ✕,
+ * running, each scrolling to its card when clicked and, unless a Claude
+ * process this server did not spawn holds the session, stoppable from its ✕,
  * then one per scheduled prompt, which only the model can cancel. Renders
  * nothing while nothing runs, which is most of the time.
  */
-export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
+export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, external, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
   const { t } = useTranslation();
+  const canStop = Boolean(sessionId) && !external;
   const running = listRunningBackgroundLaunches(messages);
   // A loaded row that has a word on its task — settled or not — is the word;
-  // a task whose row is not loaded, or is loaded without one (a backgrounded
-  // command's launch row from history says nothing until the poll does), is
-  // drawn from the map.
+  // a task whose row is not loaded, or is loaded without one, is drawn from
+  // the map.
   const settledToolIds = new Set(
     messages.filter((message) => readBackgroundTaskStatus(message) !== undefined).map((message) => message.toolId),
   );
@@ -151,7 +154,7 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, s
               {name && <span className="min-w-0 truncate">{name}</span>}
               {progress && <span className="min-w-0 truncate text-muted-foreground/70">· {progress}</span>}
             </button>
-            {sessionId && taskId && (
+            {canStop && taskId && (
               <button
                 type="button"
                 onClick={() => sendMessage({ type: 'chat.stop-task', sessionId, taskId })}
@@ -202,7 +205,7 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, crons, sessionId, s
                 {label}
               </button>
             )}
-            {sessionId && (
+            {canStop && (
               <button
                 type="button"
                 onClick={() => sendMessage({ type: 'chat.stop-task', sessionId, taskId: task.taskId })}

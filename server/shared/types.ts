@@ -358,6 +358,11 @@ export type NormalizedMessage = {
   subagent?: SubagentInfo;
   /** The workflow run this `tool_use` launched, read from its journal on disk. */
   workflow?: WorkflowInfo;
+  /**
+   * Where the backgrounded command or monitor this `tool_use` launched stands,
+   * by the same rule as a workflow's `status`. Absent for every other tool.
+   */
+  backgroundStatus?: WorkflowInfo['status'];
   /** Stored memory the reply drew on, when the provider reports it. */
   memoryCitations?: MemoryCitation[];
   toolUseResult?: unknown;
