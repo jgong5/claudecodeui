@@ -158,4 +158,25 @@ export const sessionSynchronizerService = {
       sessionId,
     };
   },
+
+  /**
+   * Re-syncs every Claude row indexed before `name_source` existed, so its
+   * name is classified and follows transcript titles again. The startup scan
+   * only reaches transcripts modified since the last scan, which leaves an
+   * untouched session's stale name in place. The sessions watcher runs it
+   * once, in the background, after the initial scan.
+   *
+   * Returns the ids of the re-synced rows; a row whose transcript is missing
+   * is skipped and stays unclassified.
+   */
+  async synchronizeUnclassifiedClaudeSessions(): Promise<string[]> {
+    const sessionIds: string[] = [];
+    for (const filePath of sessionsDb.getUnclassifiedClaudeTranscriptPaths()) {
+      const { sessionId } = await this.synchronizeProviderFile('claude', filePath);
+      if (sessionId) {
+        sessionIds.push(sessionId);
+      }
+    }
+    return sessionIds;
+  },
 };

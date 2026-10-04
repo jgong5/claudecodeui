@@ -791,4 +791,23 @@ export const sessionsDb = {
       )
       .all() as Array<{ session_id: string; jsonl_path: string }>;
   },
+
+  /**
+   * Transcript paths of the Claude rows indexed before `name_source` existed.
+   * The session synchronizer re-syncs them once after startup, which
+   * classifies each name and so removes the row from this list.
+   */
+  getUnclassifiedClaudeTranscriptPaths(): string[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT jsonl_path
+         FROM sessions
+         WHERE provider = 'claude' AND name_source IS NULL
+           AND jsonl_path IS NOT NULL AND jsonl_path <> ''`
+      )
+      .all() as Array<{ jsonl_path: string }>;
+
+    return rows.map((row) => row.jsonl_path);
+  },
 };
