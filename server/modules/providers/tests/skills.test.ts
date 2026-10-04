@@ -313,21 +313,102 @@ test('providerSkillsService lists claude user, project, and enabled plugin skill
     assert.equal(secondPluginSkill?.scope, 'plugin');
     assert.equal(secondPluginSkill?.command, '/ExampleSkills:claude-plugin-second');
 
-    const nestedPluginSkill = byName.get('claude-plugin-nested');
-    assert.equal(nestedPluginSkill?.scope, 'plugin');
-    assert.equal(nestedPluginSkill?.command, '/ExampleSkills:claude-plugin-nested');
-    assert.equal(nestedPluginSkill?.description, 'Nested Claude plugin skill');
-
-    const siblingPluginSkill = byName.get('claude-plugin-sibling');
-    assert.equal(siblingPluginSkill?.scope, 'plugin');
-    assert.equal(siblingPluginSkill?.pluginName, 'example-skills');
-    assert.equal(siblingPluginSkill?.command, '/example-skills:claude-plugin-sibling');
-    assert.equal(siblingPluginSkill?.description, 'Sibling Claude plugin skill');
+    // Claude Code reads plugin skills one level under `skills/`, and only from
+    // the installed version folder, not from stale sibling versions.
+    assert.equal(byName.has('claude-plugin-nested'), false);
+    assert.equal(byName.has('claude-plugin-sibling'), false);
     assert.equal(byName.has('disabled-command'), false);
     assert.equal(byName.has('disabled-plugin'), false);
     assert.equal(byName.has('invalid-empty-command'), false);
     assert.equal(byName.has('invalid-at-command'), false);
     assert.equal(skills.some((skill) => skill.command.startsWith('/:')), false);
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Plugins of one marketplace repo can share its root as their source. Each
+ * lists only its own skills, as Claude Code resolves them, and a description
+ * strict YAML rejects still reaches the menu.
+ */
+test('providerSkillsService lists only a claude plugin\'s own skills', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-claude-plugin-roots-'));
+  const pluginsRoot = path.join(tempRoot, '.claude', 'plugins');
+  const marketplacePath = path.join(pluginsRoot, 'marketplaces', 'team-market');
+  const teamKitPath = path.join(pluginsRoot, 'cache', 'team-market', 'team-kit', '1.0.0');
+  const manifestKitPath = path.join(pluginsRoot, 'cache', 'team-market', 'manifest-kit', '2.0.0');
+  const writeJson = async (filePath: string, data: unknown): Promise<void> => {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
+  };
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    // team-kit: a whole-repo install with no plugin.json, whose marketplace
+    // entry picks two of the repo's three skills.
+    const teamKitSkills = path.join(teamKitPath, 'skills');
+    await writeSkill(teamKitSkills, 'team-lead', 'team-lead', 'Runs the team. User-invoked: /team-lead plan');
+    await writeSkill(teamKitSkills, 'team-prose', 'team-prose', 'Writes team prose');
+    await writeSkill(teamKitSkills, 'gpu-tune', 'gpu-tune', 'Tunes GPU kernels');
+    await writeJson(path.join(marketplacePath, '.claude-plugin', 'marketplace.json'), {
+      name: 'team-market',
+      plugins: [
+        { name: 'team-kit', source: './', skills: ['./skills/team-lead', './skills/team-prose'] },
+      ],
+    });
+
+    // manifest-kit: no marketplace entry; plugin.json adds a skill folder to
+    // the default `skills/` and names one path outside the plugin root.
+    await writeJson(path.join(manifestKitPath, '.claude-plugin', 'plugin.json'), {
+      name: 'manifest-kit',
+      skills: ['./extra/solo', '../escaped'],
+    });
+    await writeSkill(path.join(manifestKitPath, 'skills'), 'base', 'base', 'Base skill');
+    await writeSkill(path.join(manifestKitPath, 'extra'), 'solo', 'solo', 'Solo skill');
+    await writeSkill(path.dirname(manifestKitPath), 'escaped', 'escaped', 'Outside the plugin');
+    await writeClaudePluginCommand(
+      path.join(manifestKitPath, 'commands'),
+      'loose',
+      'Loose command. Usage: /loose now',
+    );
+
+    await writeJson(path.join(pluginsRoot, 'known_marketplaces.json'), {
+      'team-market': { installLocation: marketplacePath },
+    });
+    await writeJson(path.join(pluginsRoot, 'installed_plugins.json'), {
+      version: 2,
+      plugins: {
+        'team-kit@team-market': [{ scope: 'user', installPath: teamKitPath, version: '1.0.0' }],
+        'manifest-kit@team-market': [{ scope: 'user', installPath: manifestKitPath, version: '2.0.0' }],
+      },
+    });
+    await writeJson(path.join(tempRoot, '.claude', 'settings.json'), {
+      enabledPlugins: { 'team-kit@team-market': true, 'manifest-kit@team-market': true },
+    });
+
+    const skills = await providerSkillsService.listProviderSkills('claude', {
+      workspacePath: tempRoot,
+    });
+    const pluginCommands = (pluginName: string) => skills
+      .filter((skill) => skill.pluginName === pluginName)
+      .map((skill) => skill.command)
+      .sort();
+
+    assert.deepEqual(pluginCommands('team-kit'), ['/team-kit:team-lead', '/team-kit:team-prose']);
+    assert.equal(
+      skills.find((skill) => skill.command === '/team-kit:team-lead')?.description,
+      'Runs the team. User-invoked: /team-lead plan',
+    );
+    assert.deepEqual(
+      pluginCommands('manifest-kit'),
+      ['/manifest-kit:base', '/manifest-kit:loose', '/manifest-kit:solo'],
+    );
+    assert.equal(
+      skills.find((skill) => skill.command === '/manifest-kit:loose')?.description,
+      'Loose command. Usage: /loose now',
+    );
   } finally {
     restoreHomeDir();
     await fs.rm(tempRoot, { recursive: true, force: true });

@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
-import { parseFrontMatter } from '@/shared/frontmatter.js';
 import type {
   ProviderSkill,
   ProviderSkillListOptions,
@@ -15,6 +14,7 @@ import {
   readObjectRecord,
   readOptionalString,
   readProviderSkillMarkdownDefinition,
+  readProviderSkillMarkdownDefinitionFromContent,
 } from '@/shared/utils.js';
 
 const getClaudeHomePath = (): string => path.join(os.homedir(), '.claude');
@@ -41,33 +41,81 @@ const pathExistsAsDirectory = async (directoryPath: string): Promise<boolean> =>
   }
 };
 
-const listChildDirectories = async (directoryPath: string): Promise<string[]> => {
+const pathExistsAsFile = async (filePath: string): Promise<boolean> => {
   try {
-    const entries = await readdir(directoryPath, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(directoryPath, entry.name))
-      .sort((left, right) => left.localeCompare(right));
+    return (await stat(filePath)).isFile();
   } catch {
-    return [];
+    return false;
   }
 };
 
-const readClaudePluginName = async (
-  installPath: string,
-  pluginId: string,
-): Promise<string | null> => {
+const readClaudePluginManifest = async (installPath: string): Promise<Record<string, unknown>> => {
   try {
-    const pluginConfig = await readJsonConfig(
-      path.join(installPath, '.claude-plugin', 'plugin.json'),
-    );
-
-    // Older or partial plugin installs may not have plugin.json yet. Falling
-    // back keeps discovery useful without inventing a separate namespace.
-    return readOptionalString(pluginConfig.name) ?? getClaudePluginName(pluginId);
+    return await readJsonConfig(path.join(installPath, '.claude-plugin', 'plugin.json'));
   } catch {
-    return getClaudePluginName(pluginId);
+    // Older or partial plugin installs may not have a readable plugin.json.
+    return {};
   }
+};
+
+/**
+ * Finds the plugin's entry in the marketplace it was installed from, through
+ * `known_marketplaces.json`. Plugins of one marketplace repo can share its
+ * root, and the entry's `skills` list is what tells them apart.
+ */
+const readClaudeMarketplaceEntry = async (
+  claudeHomePath: string,
+  pluginId: string,
+): Promise<Record<string, unknown> | null> => {
+  const [entryName, marketplaceName] = pluginId.split('@');
+  if (!entryName || !marketplaceName) {
+    return null;
+  }
+
+  try {
+    const knownMarketplaces = await readJsonConfig(
+      path.join(claudeHomePath, 'plugins', 'known_marketplaces.json'),
+    );
+    const installLocation = readOptionalString(
+      readObjectRecord(knownMarketplaces[marketplaceName])?.installLocation,
+    );
+    if (!installLocation) {
+      return null;
+    }
+
+    const marketplace = await readJsonConfig(
+      path.join(installLocation, '.claude-plugin', 'marketplace.json'),
+    );
+    const entries = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
+    return entries.map(readObjectRecord).find((entry) => entry?.name === entryName) ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const readPathList = (value: unknown): string[] =>
+  (Array.isArray(value) ? value : [value]).filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim() !== '',
+  );
+
+/**
+ * Lists the folders Claude Code scans for a plugin's skills: the default
+ * `skills/`, plus the `skills` paths of plugin.json and the marketplace entry.
+ * An entry sourced from the marketplace root that lists `skills` loads only
+ * those, because the root's `skills/` also holds its sibling plugins' skills.
+ */
+const getClaudePluginSkillRoots = (
+  manifest: Record<string, unknown>,
+  entry: Record<string, unknown> | null,
+): string[] => {
+  const entrySkills = readPathList(entry?.skills);
+  const source = typeof entry?.source === 'string' ? path.posix.normalize(entry.source) : null;
+  const replacesDefault = source === '.' || source === './';
+  return [
+    ...(replacesDefault && entrySkills.length > 0 ? [] : ['./skills']),
+    ...readPathList(manifest.skills),
+    ...entrySkills,
+  ];
 };
 
 export class ClaudeSkillsProvider extends SkillsProvider {
@@ -143,41 +191,40 @@ export class ClaudeSkillsProvider extends SkillsProvider {
           continue;
         }
 
-        // Claude's installed path points at one version folder; the usable
-        // plugin payloads live in the direct child folders beside it.
-        const pluginFolders = await listChildDirectories(path.dirname(installPath));
-        for (const pluginFolder of pluginFolders) {
-          const pluginFolderKey = `${pluginId}:${path.resolve(pluginFolder)}`;
-          if (visitedPluginFolders.has(pluginFolderKey)) {
-            continue;
-          }
-          visitedPluginFolders.add(pluginFolderKey);
+        // Only the installed version is read: sibling version folders are
+        // stale copies Claude Code no longer loads.
+        const pluginFolderKey = `${pluginId}:${path.resolve(installPath)}`;
+        if (visitedPluginFolders.has(pluginFolderKey)) {
+          continue;
+        }
+        visitedPluginFolders.add(pluginFolderKey);
 
-          const pluginName = await readClaudePluginName(pluginFolder, pluginId);
-          if (!pluginName) {
-            continue;
-          }
+        const manifest = await readClaudePluginManifest(installPath);
+        // Without a plugin.json name, the plugin id keeps discovery useful
+        // without inventing a separate namespace.
+        const pluginName = readOptionalString(manifest.name) ?? getClaudePluginName(pluginId);
+        if (!pluginName) {
+          continue;
+        }
 
-          // A plugin may ship commands, skills, or both, and the CLI offers
-          // both halves. Reading only the first folder found hid every skill
-          // that sits beside a commands folder -- and hid the whole plugin when
-          // its commands are in a format this reader does not take.
-          const commandsPath = path.join(pluginFolder, 'commands');
-          if (await pathExistsAsDirectory(commandsPath)) {
-            skills.push(
-              ...(await this.listPluginCommandSkills(commandsPath, pluginId, pluginName)),
-            );
-          }
-
-          const skillsPath = path.join(pluginFolder, 'skills');
-          if (!(await pathExistsAsDirectory(skillsPath))) {
-            continue;
-          }
-
+        // A plugin may ship commands, skills, or both, and the CLI offers
+        // both halves. Reading only the first folder found hid every skill
+        // that sits beside a commands folder -- and hid the whole plugin when
+        // its commands are in a format this reader does not take.
+        const commandsPath = path.join(installPath, 'commands');
+        if (await pathExistsAsDirectory(commandsPath)) {
           skills.push(
-            ...(await this.listPluginSkillMarkdowns(pluginFolder, pluginId, pluginName)),
+            ...(await this.listPluginCommandSkills(commandsPath, pluginId, pluginName)),
           );
         }
+
+        const skillRoots = getClaudePluginSkillRoots(
+          manifest,
+          await readClaudeMarketplaceEntry(claudeHomePath, pluginId),
+        );
+        skills.push(
+          ...(await this.listPluginSkillMarkdowns(installPath, skillRoots, pluginId, pluginName)),
+        );
       }
     }
 
@@ -226,23 +273,35 @@ export class ClaudeSkillsProvider extends SkillsProvider {
     commandPath: string,
   ): Promise<{ name: string; description: string }> {
     const content = await readFile(commandPath, 'utf8');
-    const parsed = parseFrontMatter(content);
-    const data = readObjectRecord(parsed.data) ?? {};
+    // A command is always named by its file; only the description is read.
+    const name = stripMarkdownExtension(path.basename(commandPath));
+    const { description } = readProviderSkillMarkdownDefinitionFromContent(content, name);
 
-    return {
-      name: stripMarkdownExtension(path.basename(commandPath)),
-      description: readOptionalString(data.description) ?? '',
-    };
+    return { name, description };
   }
 
   private async listPluginSkillMarkdowns(
     installPath: string,
+    skillRoots: string[],
     pluginId: string,
     pluginName: string,
   ): Promise<ProviderSkill[]> {
-    const skillFiles = await findProviderSkillMarkdownFiles(path.join(installPath, 'skills'), {
-      recursive: true,
-    });
+    const pluginRoot = path.resolve(installPath);
+    const skillFiles = new Set<string>();
+    for (const skillRoot of skillRoots) {
+      const rootPath = path.resolve(pluginRoot, skillRoot);
+      // Claude Code does not load a path that escapes the plugin root.
+      if (rootPath !== pluginRoot && !rootPath.startsWith(`${pluginRoot}${path.sep}`)) {
+        continue;
+      }
+
+      // A listed path is either one skill folder or a folder of skill folders.
+      const directSkillPath = path.join(rootPath, 'SKILL.md');
+      const rootSkillFiles = (await pathExistsAsFile(directSkillPath))
+        ? [directSkillPath]
+        : await findProviderSkillMarkdownFiles(rootPath);
+      rootSkillFiles.forEach((skillFile) => skillFiles.add(skillFile));
+    }
     const skills: ProviderSkill[] = [];
 
     for (const skillPath of skillFiles) {

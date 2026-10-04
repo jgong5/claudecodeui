@@ -159,7 +159,7 @@ Current skill discovery roots are:
 
 | Provider | User Roots | Project / Repo Roots | Prefix | Notes |
 | --- | --- | --- | --- | --- |
-| Claude | `~/.claude/skills` | `<workspace>/.claude/skills` | `/` | Also discovers Claude plugin skills from enabled plugin installs. Command skills live under `commands/`; markdown skills live under `skills/` and are scanned recursively. |
+| Claude | `~/.claude/skills` | `<workspace>/.claude/skills` | `/` | Also discovers skills of enabled plugins at each install's `installPath` only. Command skills live under `commands/`; markdown skills are `<name>/SKILL.md` one level under `skills/`, plus the `skills` paths of `plugin.json` and the plugin's marketplace entry (found via `known_marketplaces.json`). An entry sourced from the marketplace root that lists `skills` loads only those. Paths outside the plugin root are skipped. See the [plugin reference](https://code.claude.com/docs/en/plugins-reference#marketplace-entries-and-the-manifest). |
 | Codex | `~/.agents/skills`, `~/.codex/skills/.system`, `/etc/codex/skills` | `<workspace>/.agents/skills`, `path.dirname(workspacePath)/.agents/skills`, topmost git root `.agents/skills` | `$` | Overlapping roots are deduplicated before scanning. |
 | Cursor | `~/.cursor/skills` | `<workspace>/.cursor/skills`, `<workspace>/.agents/skills` | `/` | Uses slash-style commands. |
 | OpenCode | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills` | Cwd-to-topmost-git-root `.opencode/skills`, `.claude/skills`, and `.agents/skills` | `/` | Reuses OpenCode, Claude, and Agents skill locations. Overlapping roots are deduplicated before scanning. |

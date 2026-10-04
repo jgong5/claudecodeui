@@ -912,18 +912,41 @@ export async function readProviderSkillMarkdownDefinition(
 }
 
 /**
+ * Reads top-level `key: value` lines from front matter that strict YAML
+ * rejects, such as an unquoted description containing `: `. Claude Code still
+ * loads such skills, so discovery must not drop them.
+ */
+function readLooseFrontMatterFields(content: string): Record<string, string> {
+  const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)?.[1] ?? '';
+  const fields: Record<string, string> = {};
+  for (const line of block.split(/\r?\n/)) {
+    const match = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line);
+    if (match) {
+      fields[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+    }
+  }
+  return fields;
+}
+
+/**
  * Reads the `name` and `description` fields from raw skill markdown content.
  *
- * This keeps filesystem discovery and newly uploaded skill creation aligned on
- * the same front matter parsing rules. `fallbackName` is used when the markdown
- * omits a `name` field so callers still get a stable, non-empty skill id.
+ * This keeps filesystem discovery, Claude plugin commands and uploaded skill
+ * creation aligned on the same front matter parsing rules. When strict YAML
+ * parsing throws, the fields come from top-level `key: value` lines instead.
+ * `fallbackName` is used when the markdown omits a `name` field so callers
+ * still get a stable, non-empty skill id.
  */
 export function readProviderSkillMarkdownDefinitionFromContent(
   content: string,
   fallbackName: string,
 ): { name: string; description: string } {
-  const parsed = parseFrontMatter(content);
-  const data = readObjectRecord(parsed.data) ?? {};
+  let data: Record<string, unknown>;
+  try {
+    data = readObjectRecord(parseFrontMatter(content).data) ?? {};
+  } catch {
+    data = readLooseFrontMatterFields(content);
+  }
 
   return {
     name: readOptionalString(data.name) ?? fallbackName,
