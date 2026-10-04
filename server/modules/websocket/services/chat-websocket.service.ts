@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { isSessionHeldExternally, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
@@ -208,6 +208,12 @@ function resolveSendTarget(
 }
 
 /**
+ * Why a turn was not started, for a caller that retries it later: the session
+ * already has a run, or another Claude process holds it.
+ */
+type RunRefusalCode = 'RUN_IN_PROGRESS' | 'SESSION_HELD_EXTERNALLY';
+
+/**
  * Registers the run and hands the turn to the provider runtime.
  *
  * `extraRuntimeOptions` is how an edited message asks the provider to resume
@@ -222,8 +228,19 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
-): Promise<{ started: boolean; error: string | null }> {
+): Promise<{ started: boolean; error: string | null; code?: RunRefusalCode }> {
   const provider = session.provider as LLMProvider;
+
+  // A Claude process this server does not hold (a terminal `claude`, an IDE)
+  // is on the session: a run here would resume the same transcript in a
+  // second process beside it.
+  if (await isSessionHeldExternally(sessionId)) {
+    const error = 'Another Claude process holds this session.';
+    if (ws) {
+      sendProtocolError(ws, 'SESSION_HELD_EXTERNALLY', error, sessionId);
+    }
+    return { started: false, error, code: 'SESSION_HELD_EXTERNALLY' };
+  }
 
   const startedRun = chatRunRegistry.startRun({
     appSessionId: sessionId,
@@ -250,7 +267,7 @@ async function dispatchRun(
         sessionId
       );
     }
-    return { started: false, error: 'A run is already in progress for this session.' };
+    return { started: false, error: 'A run is already in progress for this session.', code: 'RUN_IN_PROGRESS' };
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
@@ -668,8 +685,8 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * everywhere in the meantime.
  *
  * Resolves when the provider run settles. Returns false when the session has
- * gone away or is busy without `interruptActiveRun`, which the caller reports
- * on the schedule.
+ * gone away, is busy without `interruptActiveRun`, or is held by another
+ * Claude process; `code` marks the refusals worth retrying later.
  */
 export async function runDetachedChatTurn(
   input: {
@@ -685,7 +702,7 @@ export async function runDetachedChatTurn(
     interruptActiveRun?: boolean;
   },
   dependencies: ChatWebSocketDependencies,
-): Promise<{ started: boolean; error: string | null }> {
+): Promise<{ started: boolean; error: string | null; code?: RunRefusalCode }> {
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) {
     return { started: false, error: 'The session no longer exists.' };
@@ -699,7 +716,7 @@ export async function runDetachedChatTurn(
   const activeRun = chatRunRegistry.getRun(input.sessionId);
   if (activeRun && activeRun.status === 'running') {
     if (!input.interruptActiveRun) {
-      return { started: false, error: 'A run was already in progress for this session.' };
+      return { started: false, error: 'A run was already in progress for this session.', code: 'RUN_IN_PROGRESS' };
     }
     // Same shape as `chat.abort`: cancel the provider run and emit the
     // terminal `complete` on its behalf, so every watching client sees the

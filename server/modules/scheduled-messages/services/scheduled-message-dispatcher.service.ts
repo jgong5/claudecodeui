@@ -72,9 +72,10 @@ async function sendClaimedQueuedMessage(
     { runtime },
   );
 
-  // The registry check and run reservation are separate operations. If a run
-  // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error === 'A run was already in progress for this session.') {
+  // The session is busy (a run won the race between the registry check and
+  // the reservation) or another Claude process holds it: put the turn back so
+  // a later poll tries again.
+  if (result.code) {
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return;
   }
@@ -118,6 +119,13 @@ async function sendClaimedMessage(
       },
       { runtime },
     );
+
+    // A session that is only busy or held by another Claude process gets the
+    // message back, and a later poll sends it once the session frees up.
+    if (result.code) {
+      scheduledMessagesDb.releaseClaim(row.id);
+      return;
+    }
 
     // Recorded rather than retried, and recorded whether the run never started
     // (deleted session, unavailable provider) or started and then failed.

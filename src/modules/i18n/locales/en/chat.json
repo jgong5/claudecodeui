@@ -149,7 +149,8 @@
       "title": "Replacing an earlier message",
       "filesNotReverted": "files the agent already changed are not reverted",
       "cancel": "Cancel"
-    }
+    },
+    "heldExternally": "Another Claude process, such as a terminal or an IDE, has this session open. Sending from here is off until it exits."
   },
   "providerSelection": {
     "title": "Choose Your AI Assistant",
