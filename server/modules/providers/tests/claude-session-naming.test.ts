@@ -101,6 +101,22 @@ test('transcript titles replace a derived app name, a web rename holds until the
   });
 });
 
+test('a new last-prompt keeps a derived name, a new ai-title replaces it', { concurrency: false }, async () => {
+  const lastPrompt = (prompt: string) => line({ type: 'last-prompt', lastPrompt: prompt });
+  await withTranscript([lastPrompt('fix the login bug in auth')], async ({ append, sync }) => {
+    const sessionId = await sync();
+    assert.equal(nameOf(sessionId!), 'fix the login bug in auth');
+
+    await append(lastPrompt('try again'));
+    await sync();
+    assert.equal(nameOf(sessionId!), 'fix the login bug in auth');
+
+    await append(aiTitle('Fix the auth login bug'));
+    await sync();
+    assert.equal(nameOf(sessionId!), 'Fix the auth login bug');
+  });
+});
+
 test('a row from before name_source matching a transcript title is classified derived', { concurrency: false }, async () => {
   await withTranscript([aiTitle('AI title')], async ({ workspacePath, append, sync }) => {
     sessionsDb.createSession(SESSION_ID, 'claude', workspacePath, 'AI title');

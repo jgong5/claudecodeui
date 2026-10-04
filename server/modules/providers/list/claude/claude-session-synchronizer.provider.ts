@@ -128,8 +128,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    * its name against the row's `name_source`.
    *
    * A `custom-title` that differs from the last one applied is a newer CLI
-   * `/rename` and always wins. Other titles only replace `derived` names, so
-   * a rename made in the app survives until the next CLI rename.
+   * `/rename` and always wins. An `ai-title` only replaces a `derived` name,
+   * so a rename made in the app survives until the next CLI rename.
    *
    * The row is read after every await, and callers write it straight back,
    * so a rename made in the app cannot land between the read and the write.
@@ -204,10 +204,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return { ...parsed, sessionName: existingName, naming };
     }
 
-    const derivedTitle = titles.aiTitle || titles.lastPrompt || historyName;
+    // Only an ai-title replaces a derived name: `last-prompt` changes every
+    // turn, so it and the history display only fill an empty or fallback name.
+    const hasRealName = Boolean(existingName) && existingName !== FALLBACK_SESSION_NAME;
+    const derivedTitle = titles.aiTitle || (hasRealName ? undefined : titles.lastPrompt || historyName);
     return {
       ...parsed,
-      // A derived app name outlives a transcript that has no title yet.
       sessionName: derivedTitle
         ? normalizeSessionName(derivedTitle, FALLBACK_SESSION_NAME)
         : existingName ?? FALLBACK_SESSION_NAME,
