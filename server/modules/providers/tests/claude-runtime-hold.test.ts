@@ -3,9 +3,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import test, { type TestContext } from 'node:test';
+import test, { after, before, type TestContext } from 'node:test';
 
-import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
+import {
+  closeConnection,
+  initializeDatabase,
+  notificationPreferencesDb,
+  pushSubscriptionsDb,
+  sessionsDb,
+} from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
@@ -31,6 +37,29 @@ const webPush = createRequire(import.meta.url)('web-push') as { sendNotification
 
 const SESSION_ID = 'app-hold-session';
 const NATIVE_ID = 'native-hold-session';
+
+// Notifications read preferences and sessions from the database, so the file
+// runs against a temporary one rather than whatever DATABASE_PATH names.
+const previousDatabasePath = process.env.DATABASE_PATH;
+let databaseDirectory = '';
+
+before(async () => {
+  databaseDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-db-'));
+  // Drops any connection an import opened, so the schema lands in the temporary file.
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(databaseDirectory, 'auth.db');
+  await initializeDatabase();
+});
+
+after(async () => {
+  closeConnection();
+  if (previousDatabasePath === undefined) {
+    delete process.env.DATABASE_PATH;
+  } else {
+    process.env.DATABASE_PATH = previousDatabasePath;
+  }
+  await rm(databaseDirectory, { recursive: true, force: true });
+});
 
 type Scripted = {
   emit: (message: Record<string, unknown>) => void;
@@ -582,10 +611,6 @@ test('scheduled prompts hold the process past the silence ceiling until the last
   // Every notification reads the user's preferences first; all disabled, so
   // the count is the whole observation.
   const notified = t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({ events: {}, channels: {} }) as never);
-  // Resolving the notification's session reads the sessions table; stub it so
-  // the test does not depend on the schema of the database DATABASE_PATH names.
-  t.mock.method(sessionsDb, 'getSessionById', () => null);
-  t.mock.method(sessionsDb, 'getSessionByProviderSessionId', () => null);
   try {
     await withRun(async ({ script }) => {
       script.emit(init());

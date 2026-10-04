@@ -4,11 +4,13 @@ import webPush from 'web-push';
 import { getConnection } from '../database/index.js';
 
 let cachedKeys = null;
-const db = getConnection();
 
 function ensureVapidKeys() {
   if (cachedKeys) return cachedKeys;
 
+  // Resolved per call, not at import: importing this module must not open the
+  // database before the server (or a test) has chosen DATABASE_PATH.
+  const db = getConnection();
   const row = db.prepare('SELECT public_key, private_key FROM vapid_keys ORDER BY id DESC LIMIT 1').get();
   if (row) {
     cachedKeys = { publicKey: row.public_key, privateKey: row.private_key };
