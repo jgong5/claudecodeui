@@ -851,6 +851,17 @@ export function useChatSessionState({
     isExternalSession,
   ]);
 
+  // An external process killed outright writes nothing at exit, so no
+  // transcript change reloads the session; its entry leaving the
+  // running-sessions poll is the only sign its unreported work stopped.
+  const externalSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isExternalSession && activeSessionId && externalSessionIdRef.current === activeSessionId) {
+      void requestLatestMessages(activeSessionId);
+    }
+    externalSessionIdRef.current = isExternalSession ? activeSessionId : null;
+  }, [activeSessionId, isExternalSession, requestLatestMessages]);
+
   // Search navigation target
   useEffect(() => {
     const session = selectedSession as Record<string, unknown> | null;

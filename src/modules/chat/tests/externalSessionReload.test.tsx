@@ -91,3 +91,32 @@ test('a busy session an external Claude process holds reloads on a transcript ch
     ['session-a', { statusText: 'Running in the Claude CLI', canInterrupt: false, startedAt: 1, external: true }],
   ])), true);
 });
+
+test('the viewed session reloads when the external Claude process holding it goes', async () => {
+  const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
+  const held: SessionActivityMap = new Map([
+    ['session-a', { statusText: null, canInterrupt: false, startedAt: 1, background: true, external: true }],
+  ]);
+  const hook = renderHook(
+    ({ processingSessions }: { processingSessions: SessionActivityMap }) =>
+      useChatSessionState({
+        isActive: true,
+        selectedProject: project,
+        selectedSession: session,
+        ws: null,
+        sendMessage: vi.fn(),
+        resetStreamingState: vi.fn(),
+        statusCheckSentAtRef: { current: new Map() },
+        lastSeqRef: { current: new Map() },
+        sessionStore: store as never,
+        processingSessions,
+      }),
+    { initialProps: { processingSessions: held } },
+  );
+  store.refreshLatestFromServer.mockClear();
+  // Killed outright, the process wrote nothing, so no transcript change follows.
+  await act(async () => {
+    hook.rerender({ processingSessions: new Map() });
+  });
+  assert.equal(store.refreshLatestFromServer.mock.calls.length, 1);
+});
