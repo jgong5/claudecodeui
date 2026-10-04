@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
+import { runMigrations } from '@/modules/database/migrations.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 
@@ -164,5 +165,20 @@ test('recent sessions are globally ordered, paginated, and limited to visible co
       secondPage.sessions.map((session) => session.session_id),
       ['session-middle', 'session-oldest'],
     );
+  });
+});
+
+test('migrations add the naming columns to an upgraded sessions table', async () => {
+  await withIsolatedDatabase(() => {
+    const db = getConnection();
+    db.exec('ALTER TABLE sessions DROP COLUMN name_source');
+    db.exec('ALTER TABLE sessions DROP COLUMN last_custom_title');
+
+    runMigrations(db);
+
+    const columns = (db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    assert.ok(columns.includes('name_source'));
+    assert.ok(columns.includes('last_custom_title'));
   });
 });

@@ -3,19 +3,31 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import type { SessionNameSource } from '@/modules/database/index.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
-  findFilesRecursivelyCreatedAfter,
+  findFilesRecursivelyModifiedAfter,
   normalizeSessionName,
   readFileTimestamps,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 
+const FALLBACK_SESSION_NAME = 'Untitled Claude Session';
+
 type ParsedSession = {
   sessionId: string;
   projectPath: string;
-  sessionName?: string;
+  sessionName: string;
+  naming: { nameSource: SessionNameSource; lastCustomTitle: string | null };
+};
+
+type TranscriptTitles = {
+  customTitle?: string;
+  aiTitle?: string;
+  lastPrompt?: string;
+  /** Every `ai-title` and `last-prompt`, including superseded ones. */
+  computedTitles: string[];
 };
 
 /**
@@ -47,7 +59,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    */
   async synchronize(since?: Date): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
-    const files = await findFilesRecursivelyCreatedAfter(
+    const files = await findFilesRecursivelyModifiedAfter(
       path.join(this.claudeHome, 'projects'),
       '.jsonl',
       since ?? null
@@ -59,12 +71,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
+      const timestamps = await readFileTimestamps(filePath);
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
       }
 
-      const timestamps = await readFileTimestamps(filePath);
       sessionsDb.createSession(
         parsed.sessionId,
         this.provider,
@@ -72,7 +84,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
-        filePath
+        filePath,
+        parsed.naming
       );
       processed += 1;
     }
@@ -92,12 +105,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const timestamps = await readFileTimestamps(filePath);
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
       return null;
     }
 
-    const timestamps = await readFileTimestamps(filePath);
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
@@ -105,12 +118,21 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      filePath,
+      parsed.naming
     );
   }
 
   /**
-   * Extracts session metadata from one Claude JSONL session file.
+   * Extracts session metadata from one Claude JSONL session file and decides
+   * its name against the row's `name_source`.
+   *
+   * A `custom-title` that differs from the last one applied is a newer CLI
+   * `/rename` and always wins. Other titles only replace `derived` names, so
+   * a rename made in the app survives until the next CLI rename.
+   *
+   * The row is read after every await, and callers write it straight back,
+   * so a rename made in the app cannot land between the read and the write.
    */
   private async processSessionFile(
     filePath: string,
@@ -135,43 +157,79 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    const titles = await this.extractSessionTitles(filePath, parsed.sessionId);
+    const historyName = nameMap.get(parsed.sessionId);
+    const customTitle = titles.customTitle ?? null;
+
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
-    const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
+    const existingName = existingSession?.custom_name || null;
+
+    let nameSource = existingSession?.name_source ?? null;
+    if (existingSession && !nameSource) {
+      // A row from before `name_source` existed: a name that matches one of
+      // this transcript's own titles was computed, anything else was typed.
+      // Older titles count too: such a row kept the title it was first given.
+      const derivedCandidates = [...titles.computedTitles, historyName]
+        .filter((title): title is string => Boolean(title?.trim()))
+        .map((title) => normalizeSessionName(title, FALLBACK_SESSION_NAME));
+      const isDerived = !existingName
+        || existingName === FALLBACK_SESSION_NAME
+        || derivedCandidates.includes(existingName);
+      if (!isDerived) {
+        // Record the current custom-title as seen, so only a later rename
+        // in the CLI replaces the name.
+        return {
+          ...parsed,
+          sessionName: existingName,
+          naming: { nameSource: 'web', lastCustomTitle: customTitle },
+        };
+      }
+      nameSource = 'derived';
+    }
+
+    const lastCustomTitle = existingSession?.last_custom_title ?? null;
+    if (customTitle && customTitle !== lastCustomTitle) {
       return {
         ...parsed,
-        sessionName: normalizeSessionName(existingSessionName, 'Untitled Claude Session'),
+        sessionName: normalizeSessionName(customTitle, FALLBACK_SESSION_NAME),
+        naming: { nameSource: 'cli', lastCustomTitle: customTitle },
       };
     }
 
-    let sessionName = await this.extractSessionTitle(filePath, parsed.sessionId);
-    if (!sessionName) {
-      sessionName = nameMap.get(parsed.sessionId);
+    const naming = { nameSource: nameSource ?? 'derived', lastCustomTitle };
+    if (existingName && naming.nameSource !== 'derived') {
+      return { ...parsed, sessionName: existingName, naming };
     }
 
+    const derivedTitle = titles.aiTitle || titles.lastPrompt || historyName;
     return {
       ...parsed,
-      sessionName: normalizeSessionName(sessionName, 'Untitled Claude Session'),
+      // A derived app name outlives a transcript that has no title yet.
+      sessionName: derivedTitle
+        ? normalizeSessionName(derivedTitle, FALLBACK_SESSION_NAME)
+        : existingName ?? FALLBACK_SESSION_NAME,
+      naming,
     };
   }
 
   /**
-   * Returns the best available title for one session from its transcript.
+   * Returns the last `custom-title` (a manual `/rename`), `ai-title` and
+   * `last-prompt` of one session's transcript, plus every `ai-title` and
+   * `last-prompt` it holds.
    *
-   * Scans forward keeping the last match of each event type, then prefers
-   * `custom-title` (a manual `/rename`) over `ai-title` over `last-prompt`.
-   * Claude writes `custom-title` immediately before `ai-title`, so a reverse
-   * scan that returns its first hit would always lose the manual rename.
+   * Scans forward keeping the last match of each event type. Claude writes
+   * `custom-title` immediately before `ai-title`, so a reverse scan that
+   * stopped at its first hit would always lose the manual rename.
    *
-   * Returns undefined on a missing or unreadable file so sync can continue.
+   * Returns no titles on a missing or unreadable file so sync can continue.
    */
-  private async extractSessionTitle(
+  private async extractSessionTitles(
     filePath: string,
     sessionId: string
-  ): Promise<string | undefined> {
+  ): Promise<TranscriptTitles> {
     try {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
@@ -179,6 +237,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       let foundCustomTitle: string | undefined;
       let foundAiTitle: string | undefined;
       let foundLastPrompt: string | undefined;
+      const computedTitles: string[] = [];
 
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index]?.trim();
@@ -210,20 +269,27 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
           const title = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
           if (title?.trim()) {
             foundAiTitle = title;
+            computedTitles.push(title);
           }
         } else if (eventType === 'last-prompt') {
           const prompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
           if (prompt?.trim()) {
             foundLastPrompt = prompt;
+            computedTitles.push(prompt);
           }
         }
       }
 
-      return foundCustomTitle || foundAiTitle || foundLastPrompt;
+      return {
+        customTitle: foundCustomTitle,
+        aiTitle: foundAiTitle,
+        lastPrompt: foundLastPrompt,
+        computedTitles,
+      };
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }
 
-    return undefined;
+    return { computedTitles: [] };
   }
 }

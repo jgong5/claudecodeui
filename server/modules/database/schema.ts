@@ -131,6 +131,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
     custom_name TEXT,
+    -- Who last set custom_name: 'web', 'cli' or 'derived' (NULL on rows that
+    -- predate the column), and the last transcript custom-title the
+    -- synchronizer applied, so an unchanged one never reverts a web rename.
+    name_source TEXT,
+    last_custom_title TEXT,
     project_path TEXT,
     jsonl_path TEXT,
     -- Model and reasoning effort this session runs with. Written when the user

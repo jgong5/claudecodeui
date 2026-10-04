@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { notificationPreferencesDb } from '@/modules/database/index.js';
+import { notificationPreferencesDb, sessionsDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
@@ -577,6 +577,10 @@ test('scheduled prompts hold the process past the silence ceiling until the last
   // Every notification reads the user's preferences first; all disabled, so
   // the count is the whole observation.
   const notified = t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({ events: {}, channels: {} }) as never);
+  // Resolving the notification's session reads the sessions table; stub it so
+  // the test does not depend on the schema of the database DATABASE_PATH names.
+  t.mock.method(sessionsDb, 'getSessionById', () => null);
+  t.mock.method(sessionsDb, 'getSessionByProviderSessionId', () => null);
   try {
     await withRun(async ({ script }) => {
       script.emit(init());
