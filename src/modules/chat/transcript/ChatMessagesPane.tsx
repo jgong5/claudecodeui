@@ -64,6 +64,8 @@ type ChatMessagesPaneProps = {
   backgroundTasks?: BackgroundTaskSummary[];
   /** The session's scheduled prompts from the activity map, for the strip to list. */
   backgroundCrons?: SessionCronSummary[];
+  /** A Claude process this server did not spawn holds the session, so the strip offers no stop. */
+  backgroundExternal?: boolean;
   /** The chat websocket's send, which the background-tasks strip stops a task over. */
   sendMessage: (message: unknown) => void;
   loadAllMessages: () => void;
@@ -133,6 +135,7 @@ function ChatMessagesPane({
   revealMessage,
   backgroundTasks,
   backgroundCrons,
+  backgroundExternal,
   sendMessage,
   loadAllMessages,
   allMessagesLoaded,
@@ -207,6 +210,7 @@ function ChatMessagesPane({
               tasks={backgroundTasks}
               crons={backgroundCrons}
               sessionId={selectedSession?.id || currentSessionId}
+              external={backgroundExternal}
               sendMessage={sendMessage}
               onReveal={revealMessage}
               onLoadAll={loadAllMessages}

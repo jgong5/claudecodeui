@@ -434,6 +434,28 @@ describe('the background tasks strip, for tasks only the activity map has a word
       .toEqual(['MonitorCI log', 'Monitortail the log']);
   });
 
+  it('offers no stop for a session a Claude process this server did not spawn holds', () => {
+    render(
+      <BackgroundTasksStrip
+        sessionId="session-1"
+        external
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        onLoadAll={() => {}}
+        messages={[toolRow({
+          toolName: 'Bash',
+          toolId: 'toolu_bash',
+          toolResult: { content: '', isError: false, toolUseResult: { backgroundTaskId: 'b5xsbzu5k' } },
+          taskStatus: { status: 'running', description: 'npm test' },
+        })]}
+        tasks={[{ taskId: 'b1', toolUseId: 'toolu_unloaded', taskType: 'local_bash', description: 'tail the log', startedAt: 1 }]}
+      />,
+    );
+
+    expect(screen.getAllByRole('button').map((chip) => chip.textContent)).toEqual(['Commandnpm test', 'Commandtail the log']);
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+  });
+
   it('lists scheduled prompts, dimmed while a background task holds them back', () => {
     const crons = [
       { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' },

@@ -271,3 +271,26 @@ test('an updated event finds a call launched before this page loaded through its
   const [row] = normalizedToChatMessages([workflowCall, launchAck, killed]);
   assert.equal(row?.taskStatus?.status, 'stopped');
 });
+
+test('a backgrounded command takes its status from history, and a settled one beats a live running', () => {
+  // A session another Claude process holds sends no task events here: the
+  // history load's word is all the strip has to go on.
+  const call = (toolId: string, backgroundStatus: NormalizedMessage['backgroundStatus']) => message(toolId, {
+    kind: 'tool_use',
+    toolName: 'Bash',
+    toolId,
+    toolInput: { command: 'npm test', run_in_background: true },
+    backgroundStatus,
+  });
+  const liveRunning = message('live', {
+    kind: 'task_status', event: 'started', taskId: 'b2', toolUseId: 'toolu_stopped', taskType: 'local_bash',
+  });
+
+  const rows = normalizedToChatMessages([call('toolu_running', 'running'), call('toolu_stopped', 'stopped'), liveRunning]);
+
+  assert.deepEqual(rows.map((row) => [row.toolId, row.taskStatus?.status]), [
+    ['toolu_running', 'running'],
+    ['toolu_stopped', 'stopped'],
+  ]);
+  assert.equal(rows[1]?.taskStatus?.taskId, 'b2', 'the live fields still ride along');
+});

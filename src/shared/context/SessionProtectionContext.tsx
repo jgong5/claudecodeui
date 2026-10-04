@@ -19,6 +19,7 @@ type RunningSessionApiItem = {
   statusText?: unknown;
   canInterrupt?: unknown;
   background?: unknown;
+  external?: unknown;
   tasks?: unknown;
   crons?: unknown;
 };
@@ -171,6 +172,7 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
               statusText: typeof session.statusText === 'string' ? session.statusText : undefined,
               canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
               background: session.background === true,
+              external: session.external === true,
               tasks: parseBackgroundTasks(session.tasks),
               crons: parseSessionCrons(session.crons),
             };

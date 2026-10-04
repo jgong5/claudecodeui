@@ -4,6 +4,7 @@
  */
 
 import type { ChatMessage, LiveTaskStatus, NormalizedMessage, SubagentActivity } from '@/shared/types';
+import { resolveBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
@@ -475,6 +476,14 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           ? liveActivity
           : serverActivity;
 
+        // A backgrounded command or monitor has no `subagent` or `workflow` to
+        // carry the history's word on it, so that word joins the live one
+        // here, by the rule the cards use: a settled history status is final.
+        const liveTask = msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined;
+        const taskStatus = msg.backgroundStatus
+          ? { ...liveTask, status: resolveBackgroundTaskStatus(msg.backgroundStatus, liveTask?.status) ?? msg.backgroundStatus }
+          : liveTask;
+
         converted.push({
           type: 'assistant',
           content: '',
@@ -489,7 +498,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           subagent: msg.subagent,
           subagentActivity,
           workflow: msg.workflow,
-          taskStatus: msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined,
+          taskStatus,
           memoryCitations: msg.memoryCitations,
           ...sharedMetadata,
         });

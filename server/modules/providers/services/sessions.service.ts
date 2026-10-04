@@ -5,7 +5,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
-import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
+import { listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
   BackgroundTaskSummary,
@@ -28,10 +28,13 @@ import { AppError, sliceTailPage } from '@/shared/utils.js';
  * abort — a task is stopped by id through `chat.stop-task` instead. `tasks`
  * and `crons` ride along on both kinds whenever the session has any.
  *
- * A turn driven outside CloudCLI — the Claude CLI in the Shell view, or a
- * terminal the user opened themselves — is listed the same way, with
- * `canInterrupt: false` because there is no run here to abort, and a
- * `statusText` saying where the work is happening.
+ * A session held by a Claude process this server's runtime did not spawn —
+ * the Claude CLI in the Shell view, a terminal the user opened themselves, an
+ * IDE — is listed with `external: true` and `canInterrupt: false`, because
+ * there is no run here to abort. While that process produces a response a
+ * `statusText` says where; while it waits for input it is listed as
+ * `background`, since its turn has ended but its background work may not
+ * have, and nothing here can see which.
  */
 type RunningSessionEntry = {
   sessionId: string;
@@ -41,6 +44,7 @@ type RunningSessionEntry = {
   background?: true;
   canInterrupt?: false;
   statusText?: string;
+  external?: true;
   tasks?: BackgroundTaskSummary[];
   crons?: SessionCronSummary[];
 };
@@ -192,30 +196,31 @@ export const sessionsService = {
           tasks,
           ...(crons ? { crons } : {}),
         });
+        runningById.set(sessionId, entries[entries.length - 1]);
       }
     }
 
-    // The chat-run registry only knows about turns CloudCLI drives itself, so
-    // without this a session working under the Claude CLI — including one
-    // CloudCLI spawned for its own Shell view — looks idle. A session already
-    // listed above keeps its richer entry.
-    for (const live of await listBusyClaudeCliSessions()) {
-      const session = sessionsDb.getSessionByProviderSessionId(live.providerSessionId);
-      if (!session || runningById.has(session.session_id)) {
+    // The chat-run registry and the runtime only know the processes CloudCLI
+    // drives itself, so without this a session held by any other Claude
+    // process — including one CloudCLI spawned for its own Shell view — looks
+    // idle. A session already listed above keeps its richer entry.
+    for (const live of await listExternalClaudeCliSessions()) {
+      if (runningById.has(live.sessionId)) {
         continue;
       }
 
       entries.push({
-        sessionId: session.session_id,
-        provider: session.provider as LLMProvider,
+        sessionId: live.sessionId,
+        provider: 'claude',
         startedAt: live.startedAt,
-        lastSeq: chatRunRegistry.getRun(session.session_id)?.lastSeq ?? 0,
-        // There is no run here to abort: the turn belongs to a CLI process
-        // CloudCLI does not own, so it can be reported but not interrupted.
+        lastSeq: chatRunRegistry.getRun(live.sessionId)?.lastSeq ?? 0,
+        // There is no run here to abort: the process is not CloudCLI's, so it
+        // can be reported but not interrupted.
         canInterrupt: false,
-        statusText: 'Running in the Claude CLI',
+        external: true,
+        ...(live.busy ? { statusText: 'Running in the Claude CLI' } : { background: true as const }),
       });
-      runningById.set(session.session_id, entries[entries.length - 1]);
+      runningById.set(live.sessionId, entries[entries.length - 1]);
     }
 
     return entries;

@@ -23,6 +23,7 @@ const sessionActivitiesMatch = (left: SessionActivity, right: SessionActivity): 
   && left.canInterrupt === right.canInterrupt
   && left.startedAt === right.startedAt
   && Boolean(left.background) === Boolean(right.background)
+  && Boolean(left.external) === Boolean(right.external)
   && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks)
   // parseSessionCrons rebuilds each entry with the same keys in the same order.
   && JSON.stringify(left.crons ?? []) === JSON.stringify(right.crons ?? []);
@@ -201,6 +202,7 @@ export function useSessionProtection() {
           canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
           ...(snapshot.background ? { background: true } : {}),
+          ...(snapshot.external ? { external: true } : {}),
           ...(snapshot.tasks ? { tasks: snapshot.tasks } : {}),
           ...(snapshot.crons ? { crons: snapshot.crons } : {}),
         });
@@ -218,7 +220,7 @@ export function useSessionProtection() {
 
   const isSessionProcessing = useCallback<IsSessionProcessing>((sessionId) => {
     const activity = sessionId ? processingSessionsRef.current.get(sessionId) : undefined;
-    return Boolean(activity && !activity.background);
+    return Boolean(activity && !activity.background && !activity.external);
   }, []);
 
   const getSessionActivity = useCallback<GetSessionActivity>(
