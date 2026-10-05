@@ -9,6 +9,7 @@ import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { api } from '@/shared/api';
+import { writeDraftText } from '@/shared/chatDrafts';
 import type {
   ChatMessage,
   Project,
@@ -350,7 +351,8 @@ function ChatInterface({
 
   /**
    * Branches the conversation into a new session that ends at this message,
-   * then opens it. The session being viewed is left exactly as it was.
+   * then opens it with the message's text in the composer, ready to change and
+   * send. The session being viewed is left exactly as it was.
    */
   const handleForkFromMessage = useCallback(async (message: ChatMessage) => {
     const anchorId = message.transcriptAnchorId;
@@ -364,6 +366,7 @@ function ChatInterface({
       if (!response.ok || typeof forkedSessionId !== 'string') {
         throw new Error(payload?.message || `HTTP ${response.status}`);
       }
+      writeDraftText(forkedSessionId, message.content || '');
       onNavigateToSession?.(forkedSessionId);
     } catch (error) {
       console.error('Error forking session:', error);
