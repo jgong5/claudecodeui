@@ -162,6 +162,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    // A transcript a session was edited off stays on disk but is nobody's
+    // conversation any more. Indexing it would list the version the user
+    // edited away from, and for a session discovered from disk, whose app id
+    // is that transcript's id, hand the row back to it.
+    if (sessionsDb.isProviderSessionSuperseded(parsed.sessionId, this.provider)) {
+      return null;
+    }
+
     const titles = await this.extractSessionTitles(filePath, parsed.sessionId);
     const historyName = nameMap.get(parsed.sessionId);
     const customTitle = titles.customTitle ?? null;

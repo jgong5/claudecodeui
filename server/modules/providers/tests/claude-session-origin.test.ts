@@ -70,3 +70,57 @@ test('session payloads mark a terminal session external with its entrypoint, and
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+/**
+ * Editing the first prompt of a session discovered from disk moves it off the
+ * transcript whose id is its own app id. Indexing that transcript again must
+ * neither hand the row back to it nor list it as a session of its own.
+ */
+test('the indexer skips a transcript a session was edited off', { concurrency: false }, async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-superseded-'));
+  const workspacePath = path.join(tmp, 'workspace');
+  const transcriptDirectory = path.join(tmp, '.claude', 'projects', 'workspace');
+  await mkdir(transcriptDirectory, { recursive: true });
+  await mkdir(workspacePath, { recursive: true });
+  await writeFile(path.join(tmp, '.claude', 'history.jsonl'), '', 'utf8');
+  const oldTranscript = path.join(transcriptDirectory, 'old-native.jsonl');
+  const row = { type: 'user', sessionId: 'old-native', cwd: workspacePath, entrypoint: 'cli', message: { role: 'user', content: 'hi' } };
+  await writeFile(oldTranscript, `${JSON.stringify(row)}\n`, 'utf8');
+
+  const originalHomedir = os.homedir;
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  (os as any).homedir = () => tmp;
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(tmp, 'auth.db');
+  await initializeDatabase();
+
+  try {
+    const synchronizer = new ClaudeSessionSynchronizer();
+    assert.equal(await synchronizer.synchronizeFile(oldTranscript), 'old-native');
+
+    // What the edit leaves behind once its run has recorded the new session.
+    sessionsDb.markProviderSessionSuperseded({
+      providerSessionId: 'old-native',
+      provider: 'claude',
+      sessionId: 'old-native',
+      jsonlPath: oldTranscript,
+    });
+    sessionsDb.detachProviderSession('old-native');
+    sessionsDb.assignProviderSessionId('old-native', 'new-native');
+
+    assert.equal(await synchronizer.synchronizeFile(oldTranscript), null);
+    assert.equal(await synchronizer.synchronize(), 0);
+    assert.equal(sessionsDb.getSessionById('old-native')?.provider_session_id, 'new-native');
+    const [project] = await getProjectsWithSessions({ skipSynchronization: true });
+    assert.deepEqual(project.sessions.map((session) => session.id), ['old-native']);
+  } finally {
+    closeConnection();
+    (os as any).homedir = originalHomedir;
+    if (previousDatabasePath === undefined) {
+      delete process.env.DATABASE_PATH;
+    } else {
+      process.env.DATABASE_PATH = previousDatabasePath;
+    }
+    await rm(tmp, { recursive: true, force: true });
+  }
+});

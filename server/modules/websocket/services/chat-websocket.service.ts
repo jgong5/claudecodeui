@@ -455,6 +455,21 @@ async function handleChatEditSend(
           // conversation that was not rewound after all.
           throw error;
         }
+      } else if (resumeThroughId === null) {
+        // Claude starts a new session when its first prompt is edited. The row
+        // lets go of the old one here so the runtime records the new id; left
+        // attached, the runtime keeps the old id and `complete` reloads the
+        // conversation the user edited away from.
+        const current = sessionsDb.getSessionById(sessionId);
+        if (current?.provider_session_id) {
+          sessionsDb.markProviderSessionSuperseded({
+            providerSessionId: current.provider_session_id,
+            provider,
+            sessionId,
+            jsonlPath: current.jsonl_path ?? null,
+          });
+          sessionsDb.detachProviderSession(sessionId);
+        }
       }
     },
   );
