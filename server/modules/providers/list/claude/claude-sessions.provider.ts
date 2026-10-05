@@ -837,18 +837,18 @@ async function getSessionMessages(
       const unreportedStatus = isAsyncLaunch
         ? launchedByLiveRun(message) ? 'running' : 'stopped'
         : 'completed';
-      // A workflow, command or monitor keeps the notification's own word,
-      // `stopped` included: work the user stopped is not work that failed.
+      // Work stopped before it finished is not work that failed. The CLI
+      // writes such a notification as `killed` — the user stopped it, or the
+      // CLI exited under it — and reads that back as `stopped`, as the live
+      // `task_updated` patch does.
       const backgroundStatus: WorkflowInfo['status'] = notification
-        ? notification.status === 'completed' || notification.status === 'stopped' ? notification.status : 'failed'
+        ? notification.status === 'completed' ? 'completed'
+          : notification.status === 'stopped' || notification.status === 'killed' ? 'stopped' : 'failed'
         : unreportedStatus;
 
       if (launch === 'agent') {
         const agentId = String(message.toolUseResult.agentId);
         const subagent = subagentsById.get(agentId);
-        const status: SubagentInfo['status'] = notification
-          ? notification.status === 'completed' ? 'completed' : 'failed'
-          : unreportedStatus;
 
         if (subagent && subagent.activity.length > 0) {
           message.subagentTools = subagent.activity;
@@ -866,7 +866,7 @@ async function getSessionMessages(
             ?? (typeof message.toolUseResult?.description === 'string' ? message.toolUseResult.description : undefined),
           model: subagent?.info.model
             ?? (typeof message.toolUseResult?.resolvedModel === 'string' ? message.toolUseResult.resolvedModel : undefined),
-          status,
+          status: backgroundStatus,
         };
       } else if (launch === 'workflow') {
         // The journal marks an agent `started` and later `result`/`failed`.
