@@ -837,6 +837,11 @@ async function getSessionMessages(
       const unreportedStatus = isAsyncLaunch
         ? launchedByLiveRun(message) ? 'running' : 'stopped'
         : 'completed';
+      // A workflow, command or monitor keeps the notification's own word,
+      // `stopped` included: work the user stopped is not work that failed.
+      const backgroundStatus: WorkflowInfo['status'] = notification
+        ? notification.status === 'completed' || notification.status === 'stopped' ? notification.status : 'failed'
+        : unreportedStatus;
 
       if (launch === 'agent') {
         const agentId = String(message.toolUseResult.agentId);
@@ -864,18 +869,13 @@ async function getSessionMessages(
           status,
         };
       } else if (launch === 'workflow') {
-        // The notification's own word is kept here, `stopped` included: a
-        // workflow the user stopped is not one that failed.
-        const status: WorkflowInfo['status'] = notification
-          ? notification.status === 'completed' || notification.status === 'stopped' ? notification.status : 'failed'
-          : unreportedStatus;
         // The journal marks an agent `started` and later `result`/`failed`.
         // Once the run itself has settled, a `started` with no second record
         // is not still going: the run was stopped under it, or a resume re-ran
         // the step under a new id. Drawing those as running put a pulsing dot
         // on a finished card.
         const agents = (workflowAgentsByDir.get(String(message.toolUseResult.transcriptDir ?? '')) ?? [])
-          .map((agent) => (status !== 'running' && agent.status === 'running' ? { ...agent, status: 'stopped' as const } : agent));
+          .map((agent) => (backgroundStatus !== 'running' && agent.status === 'running' ? { ...agent, status: 'stopped' as const } : agent));
         const countWith = (agentStatus: WorkflowAgentInfo['status']) =>
           agents.filter((agent) => agent.status === agentStatus).length;
 
@@ -883,7 +883,7 @@ async function getSessionMessages(
           runId: String(message.toolUseResult.runId ?? ''),
           name: String(message.toolUseResult.workflowName ?? ''),
           description: typeof message.toolUseResult.summary === 'string' ? message.toolUseResult.summary : undefined,
-          status,
+          status: backgroundStatus,
           agents,
           agentCounts: {
             total: agents.length,
@@ -897,9 +897,7 @@ async function getSessionMessages(
       } else {
         // A backgrounded command or monitor has no card of its own to carry a
         // status, so it rides on the row as `backgroundStatus`.
-        message.backgroundStatus = notification
-          ? notification.status === 'completed' || notification.status === 'stopped' ? notification.status : 'failed'
-          : unreportedStatus;
+        message.backgroundStatus = backgroundStatus;
       }
 
       if (notification) {
@@ -1808,9 +1806,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         msg.subagentTools = toolResult.subagentTools;
         msg.subagent = toolResult.subagent;
         msg.workflow = toolResult.workflow;
-        if (toolResult.backgroundStatus) {
-          msg.backgroundStatus = toolResult.backgroundStatus;
-        }
+        msg.backgroundStatus = toolResult.backgroundStatus;
       }
     }
 
