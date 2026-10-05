@@ -1079,6 +1079,115 @@ test('Claude history keeps a backgrounded Bash command stopped when its notifica
   }
 });
 
+test('Claude history reads a backgrounded Bash command the CLI killed at exit as stopped', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-background-bash-killed-'));
+  const sessionId = 'claude-bash-killed-session';
+  const toolUseId = 'toolu_bash_bg_killed';
+
+  try {
+    // On `/exit` or SIGHUP the CLI kills a running background command and
+    // records its notification with status `killed`.
+    const rows = [
+      {
+        type: 'assistant', uuid: 'bash-killed-call', sessionId, timestamp: '2026-08-21T10:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command: 'sleep 900', run_in_background: true } }] },
+      },
+      {
+        type: 'user', uuid: 'bash-killed-ack', sessionId, timestamp: '2026-08-21T10:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Command running in background with ID: bkill001.' }] },
+        toolUseResult: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bkill001' },
+      },
+      {
+        type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-21T10:05:00.000Z', sessionId,
+        content: [
+          '<task-notification>',
+          '<task-id>bkill001</task-id>',
+          `<tool-use-id>${toolUseId}</tool-use-id>`,
+          '<status>killed</status>',
+          '<summary>Background command "sleep 900" was stopped</summary>',
+          '</task-notification>',
+        ].join('\n'),
+      },
+    ];
+    const transcriptPath = path.join(tempRoot, `${sessionId}.jsonl`);
+    await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempRoot, 'Bash session', now, now, transcriptPath);
+
+      const history = await new ClaudeSessionsProvider({ getLiveRunStartTime: () => null }).fetchHistory(sessionId, {
+        providerSessionId: sessionId,
+      });
+      const bashRow = history.messages.find(
+        (message) => message.kind === 'tool_use' && message.toolId === toolUseId,
+      );
+
+      assert.equal(bashRow?.backgroundStatus, 'stopped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Claude history reads a background agent the CLI killed as stopped', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-killed-agent-'));
+
+  try {
+    const parentPath = await writeClaudeSubagentSession(tempRoot);
+    await writeFile(
+      parentPath,
+      (await readFile(parentPath, 'utf8')).replace('<status>completed</status>', '<status>killed</status>'),
+      'utf8',
+    );
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(SESSION_ID, 'claude', tempRoot, 'Subagent session', now, now, parentPath);
+
+      const history = await new ClaudeSessionsProvider({ getLiveRunStartTime: () => null }).fetchHistory(SESSION_ID, {
+        providerSessionId: SESSION_ID,
+      });
+      const agentRow = history.messages.find(
+        (message) => message.kind === 'tool_use' && message.toolId === AGENT_TOOL_USE_ID,
+      );
+
+      assert.equal(agentRow?.subagent?.status, 'stopped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Claude history reads a workflow the CLI killed as stopped', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-workflow-killed-'));
+
+  try {
+    const parentPath = await writeClaudeWorkflowSession(tempRoot, { notification: 'user', journal: false });
+    await writeFile(
+      parentPath,
+      (await readFile(parentPath, 'utf8')).replace('<status>completed</status>', '<status>killed</status>'),
+      'utf8',
+    );
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(WORKFLOW_SESSION_ID, 'claude', tempRoot, 'Workflow session', now, now, parentPath);
+
+      const history = await new ClaudeSessionsProvider({ getLiveRunStartTime: () => null }).fetchHistory(WORKFLOW_SESSION_ID, {
+        providerSessionId: WORKFLOW_SESSION_ID,
+      });
+      const workflowRow = history.messages.find(
+        (message) => message.kind === 'tool_use' && message.toolId === WORKFLOW_TOOL_USE_ID,
+      );
+
+      assert.equal(workflowRow?.workflow?.status, 'stopped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('a long workflow agent timeline keeps its newest steps within the transport cap', { concurrency: false }, async () => {
   // The timeline is polled while the agent runs for what it is doing now; a
   // cap that kept the first 200 steps would freeze it there, and the card's
