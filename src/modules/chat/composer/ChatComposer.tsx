@@ -523,17 +523,15 @@ export default function ChatComposer({
                         }
                       : undefined
               }
-              disabled={
-                isHeldExternally
-                  ? true
-                  : isLoading
+              disabled={isHeldExternally || (
+                isLoading
+                  ? false
+                  : isRecording
                     ? false
-                    : isRecording
-                      ? false
-                      : isTranscribing
-                        ? true
-                        : !input.trim() && attachedFiles.length === 0
-              }
+                    : isTranscribing
+                      ? true
+                      : !input.trim() && attachedFiles.length === 0
+              )}
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
               className="h-10 w-10 sm:h-10 sm:w-10"

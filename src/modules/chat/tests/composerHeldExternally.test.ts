@@ -29,9 +29,11 @@ const fetchMock = vi.fn(async (url: string) => {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 });
 
-const submit = async (processingSessions: SessionActivityMap, content: string) => {
-  const sent: Array<{ type: string }> = [];
-  const view = renderHook(() =>
+const executedCount = () =>
+  fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/commands/execute')).length;
+
+const renderComposer = (processingSessions: SessionActivityMap, sent: Array<{ type: string }> = []) =>
+  renderHook(() =>
     useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: SESSION,
@@ -53,13 +55,16 @@ const submit = async (processingSessions: SessionActivityMap, content: string) =
       setPendingPermissionRequests: () => undefined,
     }),
   );
+
+const submit = async (processingSessions: SessionActivityMap, content: string) => {
+  const sent: Array<{ type: string }> = [];
+  const view = renderComposer(processingSessions, sent);
   if (content.startsWith('/')) {
     await waitFor(() => assert.ok(view.result.current.slashCommandsCount > 0));
   }
   await act(async () => { view.result.current.setInput(content); });
   await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
-  const executed = fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/commands/execute')).length;
-  return { sent, executed };
+  return { sent, executed: executedCount() };
 };
 
 beforeEach(() => {
@@ -88,4 +93,14 @@ test('a slash command on such a session does not run', async () => {
 test('both go through once the session is free', async () => {
   assert.equal((await submit(new Map(), 'hello')).sent.filter((message) => message.type === 'chat.send').length, 1);
   assert.equal((await submit(new Map(), '/cost')).executed, 1);
+});
+
+test('the token-usage button runs no command on such a session, and runs /cost once it is free', async () => {
+  const held = renderComposer(heldExternally);
+  await act(async () => { held.result.current.showCostModal(); });
+  assert.equal(executedCount(), 0);
+
+  const free = renderComposer(new Map());
+  await act(async () => { free.result.current.showCostModal(); });
+  await waitFor(() => assert.equal(executedCount(), 1));
 });
