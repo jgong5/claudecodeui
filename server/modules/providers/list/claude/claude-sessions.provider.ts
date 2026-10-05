@@ -613,7 +613,7 @@ function indexNewestRowPerBranch(rows: AnyRecord[]): Map<string, number> {
  * Drops the rows belonging to prompts the next resume will not replay.
  *
  * When a message is edited, Claude resumes the conversation partway and appends
- * the replacement, so two prompts end up sharing one parent and the file holds
+ * the replacement, so two prompts end up answering one turn and the file holds
  * both the abandoned attempt and the live one. A flat read would show them
  * stacked, which reads as the app having sent the message twice. The same shape
  * appears without an edit when a session is driven from Chat and from the
@@ -627,22 +627,50 @@ function indexNewestRowPerBranch(rows: AnyRecord[]): Map<string, number> {
  * fork that is not on that chain at all (one made before a compaction) keeps
  * the branch that was appended to last.
  *
+ * Prompts are grouped by the turn they answer, not by their direct parent: a
+ * turn ends assistant, `attachment`, `system`, and the next prompt parents on
+ * the last of these, while an edit resumes at the assistant row and parents
+ * there. The walk stops at a non-meta user row so that a `/command` and its
+ * `<local-command-stdout>` do not read as a fork.
+ *
  * Only sibling *prompts* are treated as a fork. Branch points made by parallel
  * tool calls are extremely common — one assistant turn writes several chained
  * rows and each tool result parents onto its own — and pruning those would
  * delete tool output from every transcript in the app.
  */
 function dropSupersededPromptBranches(rows: AnyRecord[]): AnyRecord[] {
+  const byUuid = new Map<string, AnyRecord>();
+  for (const row of rows) {
+    if (typeof row.uuid === 'string') {
+      byUuid.set(row.uuid, row);
+    }
+  }
+  const turnAnchorOf = (prompt: AnyRecord): string => {
+    let anchor: string = prompt.parentUuid;
+    const seen = new Set<string>();
+    while (!seen.has(anchor)) {
+      seen.add(anchor);
+      const parent = byUuid.get(anchor);
+      if (!parent || typeof parent.parentUuid !== 'string' || parent.type === 'assistant'
+        || (parent.type === 'user' && parent.isMeta !== true)) {
+        break;
+      }
+      anchor = parent.parentUuid;
+    }
+    return anchor;
+  };
+
   const promptSiblings = new Map<string, AnyRecord[]>();
   for (const row of rows) {
     if (typeof row.parentUuid !== 'string' || !isUserPromptRow(row)) {
       continue;
     }
-    const siblings = promptSiblings.get(row.parentUuid);
+    const anchor = turnAnchorOf(row);
+    const siblings = promptSiblings.get(anchor);
     if (siblings) {
       siblings.push(row);
     } else {
-      promptSiblings.set(row.parentUuid, [row]);
+      promptSiblings.set(anchor, [row]);
     }
   }
 
