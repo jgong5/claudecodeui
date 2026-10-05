@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
+import { ClaudeSessionsProvider, listScheduledPrompts } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
@@ -545,6 +545,110 @@ test('an idle external process with an unreported background Bash reads as runni
   } finally {
     await rm(projectDirectory, { recursive: true, force: true });
   }
+});
+
+/** A tool call and its result as the CLI writes them, `toolUseResult` beside the result. */
+const toolCallRows = (
+  sessionId: string,
+  toolUseId: string,
+  name: string,
+  at: number,
+  input: Record<string, unknown>,
+  toolUseResult: Record<string, unknown>,
+) => [
+  {
+    type: 'assistant', uuid: `${toolUseId}-call`, sessionId, timestamp: new Date(at).toISOString(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name, input }] },
+  },
+  {
+    type: 'user', uuid: `${toolUseId}-result`, sessionId, timestamp: new Date(at).toISOString(),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: `${name} done` }] },
+    toolUseResult,
+  },
+];
+
+test('an idle external process lists the prompts its transcript still has scheduled', { concurrency: false }, async () => {
+  const projectDirectory = await mkdtemp(path.join(os.tmpdir(), 'external-crons-'));
+  const sessionId = 'claude-native-external-crons';
+  const minute = 60_000;
+  const processStartedAt = Date.now() - 60 * minute;
+  const cronCreate = (id: string, at: number) => toolCallRows(
+    sessionId, `toolu_create_${id}`, 'CronCreate', at,
+    { cron: '7 * * * *', prompt: `run ${id}`, recurring: true, durable: false },
+    { id, humanSchedule: 'Every hour', recurring: true, durable: false },
+  );
+  const wakeup = (toolUseId: string, at: number, scheduledFor: number) => toolCallRows(
+    sessionId, toolUseId, 'ScheduleWakeup', at,
+    { delaySeconds: 60, prompt: `wake ${toolUseId}`, reason: 'test' },
+    { scheduledFor, clampedDelaySeconds: 60, wasClamped: false },
+  );
+  const futureWakeupAt = new Date(Date.now() + 30 * minute);
+  futureWakeupAt.setSeconds(0, 0);
+  const rows = [
+    // Made by an earlier process of the session; its job died with it.
+    ...cronCreate('before01', processStartedAt - 10 * minute),
+    ...cronCreate('kept0001', processStartedAt + 5 * minute),
+    ...cronCreate('deleted1', processStartedAt + 6 * minute),
+    ...toolCallRows(sessionId, 'toolu_delete', 'CronDelete', processStartedAt + 7 * minute, { id: 'deleted1' }, { id: 'deleted1' }),
+    ...wakeup('toolu_wakeup_past', processStartedAt + 8 * minute, Date.now() - 10 * minute),
+    ...wakeup('toolu_wakeup_future', processStartedAt + 9 * minute, futureWakeupAt.getTime()),
+  ];
+  const transcriptPath = path.join(projectDirectory, `${sessionId}.jsonl`);
+  await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', projectDirectory, 'External session', now, now, transcriptPath);
+
+      await withClaudeCliRegistry(
+        [{ pid: process.pid, sessionId, status: 'idle', startedAt: processStartedAt }],
+        async () => await withProviders(
+          { claude: { run: async () => undefined, abort: () => false } },
+          async () => {
+            const [entry] = await sessionsService.listRunningSessions();
+            assert.equal(entry.external, true);
+            assert.deepEqual(entry.crons, [
+              { id: 'kept0001', schedule: '7 * * * *', recurring: true, prompt: 'run kept0001' },
+              {
+                id: 'toolu_wakeup_future',
+                schedule: `${futureWakeupAt.getMinutes()} ${futureWakeupAt.getHours()} * * *`,
+                recurring: false,
+                prompt: 'wake toolu_wakeup_future',
+              },
+            ]);
+          },
+        ),
+      );
+    });
+  } finally {
+    await rm(projectDirectory, { recursive: true, force: true });
+  }
+});
+
+test('scheduled prompts drop when they expire, and a failed call schedules nothing', () => {
+  const day = 24 * 60 * 60_000;
+  const createdAt = new Date(2026, 9, 5, 12, 0).getTime();
+  const call = (toolId: string, toolName: string, toolInput: Record<string, unknown>, toolUseResult: Record<string, unknown>, isError = false) => ({
+    id: toolId, sessionId: 's', provider: 'claude' as const, kind: 'tool_use' as const,
+    timestamp: new Date(createdAt).toISOString(), toolId, toolName, toolInput,
+    toolResult: { content: '', isError, toolUseResult },
+  });
+  const cron = (id: string, schedule: string, recurring: boolean) =>
+    call(`toolu_${id}`, 'CronCreate', { cron: schedule, prompt: id, recurring }, { id });
+  const messages = [
+    cron('recurring', '*/5 * * * *', true),
+    // Fires at 14:30 on the day it was made.
+    cron('literal', '30 14 5 10 *', false),
+    // Not a literal date: it lasts as long as the process.
+    cron('pattern', '0 9 * * 1', false),
+    call('toolu_failed', 'CronCreate', { cron: '* * * * *', prompt: 'failed' }, { id: 'failed' }, true),
+  ];
+  const ids = (now: number) => listScheduledPrompts(messages, createdAt, now).map((cron) => cron.id);
+
+  assert.deepEqual(ids(createdAt + 60_000), ['recurring', 'literal', 'pattern']);
+  assert.deepEqual(ids(new Date(2026, 9, 5, 14, 30).getTime()), ['recurring', 'pattern']);
+  assert.deepEqual(ids(createdAt + 7 * day), ['pattern']);
 });
 
 test('a cached history page stops reading an external session\'s Bash as running once its process is gone', { concurrency: false }, async () => {

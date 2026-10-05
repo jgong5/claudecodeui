@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
+import { listScheduledPrompts } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { isSessionHeldExternally, listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
@@ -225,6 +226,13 @@ export const sessionsService = {
         continue;
       }
 
+      // The schedule is read from the transcript, since only the runtime's
+      // own processes report theirs.
+      const crons = listScheduledPrompts(
+        (await sessionsService.fetchHistory(live.sessionId)).messages,
+        live.startedAt,
+        Date.now(),
+      );
       entries.push({
         sessionId: live.sessionId,
         provider: 'claude',
@@ -235,6 +243,7 @@ export const sessionsService = {
         canInterrupt: false,
         external: true,
         ...(live.busy ? { statusText: 'Running in the Claude CLI' } : { background: true as const }),
+        ...(crons.length > 0 ? { crons } : {}),
       });
       runningById.set(live.sessionId, entries[entries.length - 1]);
     }

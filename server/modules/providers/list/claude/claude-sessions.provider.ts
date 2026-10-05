@@ -10,6 +10,7 @@ import type {
   FetchHistoryOptions,
   FetchHistoryResult,
   NormalizedMessage,
+  SessionCronSummary,
   SubagentActivity,
   SubagentInfo,
   TaskUsage,
@@ -1193,6 +1194,74 @@ function readTaskStatusEvent(raw: AnyRecord): ClaudeTaskStatusEvent | null {
     default:
       return null;
   }
+}
+
+/** The CLI deletes a recurring CronCreate job this long after creating it. */
+const RECURRING_CRON_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * When a one-shot cron fires, or Infinity when that cannot be read without a
+ * cron parser. Only a schedule with a literal minute, hour, day and month is
+ * read: it fires at the first such local time after its creation.
+ */
+function readOneShotFireTime(schedule: string, createdAt: number): number {
+  const [minute, hour, day, month] = schedule.trim().split(/\s+/);
+  if (![minute, hour, day, month].every((field) => /^\d+$/.test(field ?? ''))) {
+    return Infinity;
+  }
+  const fireTimeIn = (year: number) => new Date(year, Number(month) - 1, Number(day), Number(hour), Number(minute)).getTime();
+  const createdYear = new Date(createdAt).getFullYear();
+  return fireTimeIn(createdYear) >= createdAt ? fireTimeIn(createdYear) : fireTimeIn(createdYear + 1);
+}
+
+/**
+ * The prompts a Claude process still has scheduled, folded from its session's
+ * history: CronCreate jobs and ScheduleWakeup wakeups.
+ *
+ * Used by the providers module's sessions service for a session held by a
+ * Claude process this server did not spawn. The runtime learns a process's
+ * schedule from the Stop hook, which fires only for processes it drives, so
+ * the transcript is all there is for any other.
+ *
+ * A job lives in the process that made it, so only calls made at or after
+ * the process's `startedAt` count, and a call that failed scheduled nothing.
+ * A wakeup is listed like the CLI lists one, as a one-shot job pinned to its
+ * minute, keyed by its tool_use id. Expiry is approximate where reading it
+ * would take a cron parser: a one-shot job without a literal date lasts until
+ * the process exits.
+ */
+export function listScheduledPrompts(
+  messages: NormalizedMessage[],
+  startedAt: number,
+  now: number,
+): SessionCronSummary[] {
+  const scheduled = new Map<string, { cron: SessionCronSummary; dropsAt: number }>();
+  for (const message of messages) {
+    const calledAt = Date.parse(message.timestamp);
+    if (message.kind !== 'tool_use' || !(calledAt >= startedAt) || !message.toolResult || message.toolResult.isError) {
+      continue;
+    }
+    const input = readObjectRecord(message.toolInput) ?? {};
+    const result = readObjectRecord(message.toolResult.toolUseResult) ?? {};
+    const prompt = typeof input.prompt === 'string' ? input.prompt : '';
+
+    if (message.toolName === 'CronCreate' && typeof result.id === 'string' && typeof input.cron === 'string') {
+      const recurring = input.recurring !== false;
+      scheduled.set(result.id, {
+        cron: { id: result.id, schedule: input.cron, recurring, prompt },
+        dropsAt: recurring ? calledAt + RECURRING_CRON_LIFETIME_MS : readOneShotFireTime(input.cron, calledAt),
+      });
+    } else if (message.toolName === 'CronDelete' && typeof input.id === 'string') {
+      scheduled.delete(input.id);
+    } else if (message.toolName === 'ScheduleWakeup' && message.toolId && typeof result.scheduledFor === 'number') {
+      const firesAt = new Date(result.scheduledFor);
+      scheduled.set(message.toolId, {
+        cron: { id: message.toolId, schedule: `${firesAt.getMinutes()} ${firesAt.getHours()} * * *`, recurring: false, prompt },
+        dropsAt: result.scheduledFor,
+      });
+    }
+  }
+  return [...scheduled.values()].filter(({ dropsAt }) => now < dropsAt).map(({ cron }) => cron);
 }
 
 type ClaudeSessionsProviderOptions = {
