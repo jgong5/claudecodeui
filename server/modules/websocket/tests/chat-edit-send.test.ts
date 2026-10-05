@@ -68,6 +68,8 @@ type RunCall = { provider: string; command: string; options: Record<string, unkn
 let holdRun: Promise<void> | null = null;
 /** Set by a test whose joined send finds the process no longer taking input. */
 let joinedProcessLetGo = false;
+/** Set by a test that inspects state at the moment the runtime is entered. */
+let runStarted: (() => void) | null = null;
 let releaseHeldRun: (() => void) | null = null;
 
 function holdTheNextRun(): void {
@@ -110,6 +112,7 @@ async function withGateway(
           // setting up, answers to `/exit`.
           exit: () => false,
           run: async (runProvider: string, command: string, options: Record<string, unknown>) => {
+            runStarted?.();
             runs.push({ provider: runProvider, command, options });
             if (options.joinedRun && joinedProcessLetGo) {
               // Its turn ended between the join and the push.
@@ -131,6 +134,7 @@ async function withGateway(
     releaseHeldRun = null;
     holdRun = null;
     joinedProcessLetGo = false;
+    runStarted = null;
     connectedClients.clear();
     chatRunRegistry.clearAll();
     closeConnection();
@@ -161,11 +165,21 @@ test('an edit resumes through the turn before the one being replaced', async () 
     // Inclusive of the row it names, so this is the last turn KEPT.
     assert.equal(runs[0].options.resumeAnchorId, 'e-a1');
     assert.equal(runs[0].options.resumeFromScratch, false);
+    // The run resumes the same transcript, so the row keeps it.
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.provider_session_id, SESSION_ID);
+    assert.equal(sessionsDb.isProviderSessionSuperseded(SESSION_ID, 'claude'), false);
   });
 });
 
 test('editing the first prompt starts the conversation over', async () => {
   await withGateway('claude', async ({ socket, runs }) => {
+    // Read from inside the run, which is when the runtime resolves the id it
+    // resumes: a row still holding the old one would resume it.
+    const whenRunStarted: { providerSessionId?: string | null; superseded?: boolean } = {};
+    runStarted = () => {
+      whenRunStarted.providerSessionId = sessionsDb.getSessionById(SESSION_ID)?.provider_session_id;
+      whenRunStarted.superseded = sessionsDb.isProviderSessionSuperseded(SESSION_ID, 'claude');
+    };
     socket.emit('message', JSON.stringify({
       type: 'chat.edit-send',
       sessionId: SESSION_ID,
@@ -177,6 +191,30 @@ test('editing the first prompt starts the conversation over', async () => {
     assert.equal(runs.length, 1);
     assert.equal(runs[0].options.resumeAnchorId, undefined);
     assert.equal(runs[0].options.resumeFromScratch, true);
+    assert.equal(whenRunStarted.providerSessionId, null);
+    assert.equal(whenRunStarted.superseded, true);
+  });
+});
+
+test('an edit of the first prompt that is refused leaves the session on its transcript', async () => {
+  await withGateway('claude', async ({ socket, runs }) => {
+    holdTheNextRun();
+    // A plain send is admitted first; the edit then finds it in flight, and an
+    // edit never joins a running turn.
+    socket.emit('message', JSON.stringify({ type: 'chat.send', sessionId: SESSION_ID, content: 'running' }));
+    await settle();
+    socket.emit('message', JSON.stringify({
+      type: 'chat.edit-send',
+      sessionId: SESSION_ID,
+      anchorId: 'e-u1',
+      content: 'too late',
+    }));
+    await settle();
+
+    assert.equal(runs.length, 1);
+    assert.equal(socket.frames.at(-1)?.code, 'RUN_IN_PROGRESS');
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.provider_session_id, SESSION_ID);
+    assert.equal(sessionsDb.isProviderSessionSuperseded(SESSION_ID, 'claude'), false);
   });
 });
 
