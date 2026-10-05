@@ -1028,6 +1028,57 @@ test('Claude history folds a backgrounded Bash command\'s notification onto its 
   }
 });
 
+test('Claude history keeps a backgrounded Bash command stopped when its notification says so', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-background-bash-stopped-'));
+  const sessionId = 'claude-bash-stopped-session';
+  const toolUseId = 'toolu_bash_bg_stopped';
+
+  try {
+    const rows = [
+      {
+        type: 'assistant', uuid: 'bash-stopped-call', sessionId, timestamp: '2026-08-21T10:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command: 'sleep 900', run_in_background: true } }] },
+      },
+      {
+        type: 'user', uuid: 'bash-stopped-ack', sessionId, timestamp: '2026-08-21T10:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Command running in background with ID: bstop001.' }] },
+        toolUseResult: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bstop001' },
+      },
+      {
+        type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-21T10:05:00.000Z', sessionId,
+        content: [
+          '<task-notification>',
+          `<tool-use-id>${toolUseId}</tool-use-id>`,
+          '<status>stopped</status>',
+          '<summary>Background command "sleep 900" was stopped</summary>',
+          '</task-notification>',
+        ].join('\n'),
+      },
+    ];
+    const transcriptPath = path.join(tempRoot, `${sessionId}.jsonl`);
+    await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempRoot, 'Bash session', now, now, transcriptPath);
+
+      // The run that launched it is still live, so only the notification can
+      // say the command is not running.
+      const liveRunStartedAt = Date.parse('2026-08-21T09:00:00.000Z');
+      const history = await new ClaudeSessionsProvider({ getLiveRunStartTime: () => liveRunStartedAt }).fetchHistory(sessionId, {
+        providerSessionId: sessionId,
+      });
+      const bashRow = history.messages.find(
+        (message) => message.kind === 'tool_use' && message.toolId === toolUseId,
+      );
+
+      assert.equal(bashRow?.backgroundStatus, 'stopped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('a long workflow agent timeline keeps its newest steps within the transport cap', { concurrency: false }, async () => {
   // The timeline is polled while the agent runs for what it is doing now; a
   // cap that kept the first 200 steps would freeze it there, and the card's
