@@ -8,12 +8,8 @@ import type { IProviderFork } from '@/shared/interfaces.js';
  * `forked_from_id` back-reference, which is what makes the copy resumable
  * rather than an inert duplicate of the file.
  *
- * One difference from the Claude fork worth knowing about: Codex's unit is a
- * turn, not a row. `upToAnchorId` names the turn a user message belongs to and
- * the cut is inclusive of it, so forking from a message keeps that message
- * *and the answer it got*. Claude's `upToMessageId` can stop at the prompt
- * itself. There is no way to express the finer cut here — a turn is written as
- * one thing — and the coarser one is the more useful of the two anyway.
+ * Codex's unit is a turn, not a row: `upToAnchorId` names the last turn to
+ * keep, and the cut is inclusive of it.
  */
 export class CodexForkProvider implements IProviderFork {
   async forkSession(input: {

@@ -75,15 +75,83 @@ function seedSource(directory: string): void {
   sessionsDb.assignProviderSessionId(SOURCE_ID, 'native-source');
 }
 
+/**
+ * Two turns as the CLI writes them: the second prompt's parent is a system
+ * note, not the assistant row that ended the first turn.
+ */
+async function seedTwoTurnTranscript(directory: string): Promise<void> {
+  const row = (uuid: string, parentUuid: string | null, type: string, content: string) => JSON.stringify({
+    type,
+    uuid,
+    parentUuid,
+    sessionId: 'native-source',
+    timestamp: new Date().toISOString(),
+    message: { role: type, content },
+  });
+  await writeFile(path.join(directory, 'native-source.jsonl'), [
+    row('user-1', null, 'user', 'First prompt'),
+    row('assistant-1', 'user-1', 'assistant', 'First answer'),
+    row('note-1', 'assistant-1', 'system', 'Injected note'),
+    row('user-2', 'note-1', 'user', 'Second prompt'),
+    row('assistant-2', 'user-2', 'assistant', 'Second answer'),
+  ].join('\n') + '\n', 'utf8');
+}
+
+test('forking from a prompt keeps everything before it and not the prompt itself', async () => {
+  await withForkableClaude(async ({ calls, directory }) => {
+    seedSource(directory);
+    await seedTwoTurnTranscript(directory);
+
+    await sessionsService.forkSessionById(SOURCE_ID, { upToAnchorId: 'user-2' });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].upToAnchorId, 'assistant-1');
+  });
+});
+
+test('forking from the first prompt makes an empty session without a provider fork', async () => {
+  await withForkableClaude(async ({ calls, directory }) => {
+    seedSource(directory);
+    await seedTwoTurnTranscript(directory);
+    sessionsDb.setSessionModel(SOURCE_ID, 'claude-opus-5');
+    sessionsDb.setSessionEffort(SOURCE_ID, 'xhigh');
+
+    const result = await sessionsService.forkSessionById(SOURCE_ID, { upToAnchorId: 'user-1' });
+
+    assert.equal(calls.length, 0);
+    const forked = sessionsDb.getSessionById(result.sessionId);
+    assert.equal(forked?.provider_session_id, null);
+    assert.equal(forked?.jsonl_path, null);
+    assert.equal(forked?.forked_from_session_id, SOURCE_ID);
+    assert.equal(forked?.model, 'claude-opus-5');
+    assert.equal(forked?.effort, 'xhigh');
+    assert.deepEqual((await sessionsService.fetchHistory(result.sessionId)).messages, []);
+  });
+});
+
+test('forking from a message that is not in the transcript is refused', async () => {
+  await withForkableClaude(async ({ calls, directory }) => {
+    seedSource(directory);
+    await seedTwoTurnTranscript(directory);
+
+    await assert.rejects(
+      () => sessionsService.forkSessionById(SOURCE_ID, { upToAnchorId: 'no-such-message' }),
+      (error: Error & { code?: string }) => error.code === 'ANCHOR_NOT_FOUND',
+    );
+    assert.equal(calls.length, 0);
+  });
+});
+
 test('a fork becomes an independent session that points back at its source', async () => {
   await withForkableClaude(async ({ calls, directory }) => {
     seedSource(directory);
 
-    const result = await sessionsService.forkSessionById(SOURCE_ID, { upToAnchorId: 'uuid-3' });
+    const result = await sessionsService.forkSessionById(SOURCE_ID);
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].providerSessionId, 'native-source');
-    assert.equal(calls[0].upToAnchorId, 'uuid-3');
+    // No anchor copies the whole conversation.
+    assert.equal(calls[0].upToAnchorId, undefined);
 
     const forked = sessionsDb.getSessionById(result.sessionId);
     assert.ok(forked);

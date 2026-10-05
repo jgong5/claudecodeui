@@ -351,7 +351,8 @@ export const sessionsService = {
 
   /**
    * Branches a session into an independent one containing its conversation up
-   * to `upToAnchorId` (the whole thing when omitted).
+   * to, but not including, the message `upToAnchorId` names (the whole thing
+   * when omitted).
    *
    * The source is left completely untouched — this is the "try two approaches"
    * action, not a destructive one.
@@ -389,13 +390,33 @@ export const sessionsService = {
     const sessionName = options.title?.trim()
       || `${source.custom_name?.trim() || 'Session'} (fork)`;
 
-    const forked = await fork.forkSession({
-      providerSessionId: source.provider_session_id,
-      jsonlPath: source.jsonl_path,
-      projectPath: source.project_path ?? '',
-      upToAnchorId: options.upToAnchorId,
-      title: sessionName,
-    });
+    // Forking from a message keeps everything before it. Both providers' cuts
+    // are inclusive, so they are handed the last row (or turn) to keep, which
+    // is exactly what an edit of that message would resume through.
+    let keepThroughId: string | null | undefined;
+    if (options.upToAnchorId) {
+      const anchor = await this.resolveEditAnchor(sessionId, options.upToAnchorId);
+      if (!anchor?.found) {
+        throw new AppError('That message is no longer in the transcript.', {
+          code: 'ANCHOR_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
+      keepThroughId = anchor.resumeThroughId;
+    }
+
+    // Nothing precedes the first prompt, so its fork starts with no transcript,
+    // like a session that has never run. Handing `null` on as "no cut" would
+    // copy the whole conversation instead.
+    const forked = keepThroughId === null
+      ? { providerSessionId: null, jsonlPath: null }
+      : await fork.forkSession({
+        providerSessionId: source.provider_session_id,
+        jsonlPath: source.jsonl_path,
+        projectPath: source.project_path ?? '',
+        upToAnchorId: keepThroughId,
+        title: sessionName,
+      });
 
     const forkSessionId = randomUUID();
     sessionsDb.createForkedSession({

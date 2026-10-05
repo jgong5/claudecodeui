@@ -250,20 +250,21 @@ export const sessionsDb = {
   },
 
   /**
-   * Inserts a session that already has its provider artifact on disk.
+   * Inserts a session branched from another one.
    *
    * Unlike `createAppSession` this writes `provider_session_id` and
    * `jsonl_path` immediately, because a fork's transcript file exists before
    * the row does — and the filesystem watcher would otherwise index it as an
-   * unrelated session under its own id.
+   * unrelated session under its own id. A fork that keeps nothing (cut at the
+   * first prompt) has neither yet, and gets them on its first run.
    */
   createForkedSession(input: {
     sessionId: string;
     provider: string;
     projectPath: string;
     customName: string | null;
-    providerSessionId: string;
-    jsonlPath: string;
+    providerSessionId: string | null;
+    jsonlPath: string | null;
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;
