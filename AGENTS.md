@@ -7,3 +7,7 @@ For every task that creates, modifies, refactors, or reviews backend code under 
 ## Frontend code
 
 For every task that creates, modifies, refactors, or reviews frontend code under `src/`, load and follow `$frontend-module-standards` from `.agents/skills/frontend-module-standards/SKILL.md`. Apply it only to frontend code; do not impose those architecture rules on the backend.
+
+## Deployment
+
+To deploy or update the `cloudcli` systemd service, load and follow `$deploy-service` from `.agents/skills/deploy-service/SKILL.md`.
