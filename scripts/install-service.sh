@@ -30,7 +30,7 @@ done
 [[ $PORT =~ ^[0-9]+$ ]] || { echo "--port needs a number, got: $PORT" >&2; exit 1; }
 if [[ -z $ENV_FILE && ! -f $HOME/.claude/.credentials.json && -t 0 ]]; then
   read -rp "Env file that exports ANTHROPIC_* (empty if you will run 'claude' and /login instead): " f
-  [[ -n $f ]] && ENV_FILE=$(realpath "$f")
+  [[ -n $f ]] && ENV_FILE=$(realpath "${f/#\~/$HOME}")
 fi
 [[ -z $ENV_FILE || -r $ENV_FILE ]] || { echo "--env-file not readable: $ENV_FILE" >&2; exit 1; }
 [[ -n $ENV_FILE || -f $HOME/.claude/.credentials.json ]] ||

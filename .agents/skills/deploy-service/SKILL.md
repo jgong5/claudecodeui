@@ -7,7 +7,7 @@ description: Deploy or update the CloudCLI web UI as the `cloudcli` systemd serv
 
 `scripts/install-service.sh` does the whole job, fresh host or update: installs Node (major from `.nvmrc`) and Claude Code under `~/.local` if missing, builds and globally installs this checkout, writes `~/.cloudcli/start.sh` and `/etc/systemd/system/cloudcli.service`, then restarts the service. Flags are in `--help`; they persist in `~/.cloudcli/service.conf`, so an update is a bare re-run.
 
-1. If `~/.cloudcli/service.conf` is missing (a first run on this host, even if a `cloudcli` service already exists) and `~/.claude/.credentials.json` is missing too, ask the user for the path of the bash file that exports the `ANTHROPIC_*` variables, or for them to run `claude` and `/login` first. Do not run the script until they answer: without either, it stops.
+1. If `~/.cloudcli/service.conf` sets no `ENV_FILE` (the file is missing, as on a first run even when a `cloudcli` service already exists, or it saves `ENV_FILE` empty) and `~/.claude/.credentials.json` is missing too, ask the user for the path of the bash file that exports the `ANTHROPIC_*` variables, or for them to run `claude` and `/login` first. Do not run the script until they answer: without either, it stops.
 2. Check out the commit to deploy (normally `main`) and run the script from that checkout, passing `--env-file <that path>` if the user gave one. The script references that file and never copies the secrets. In a terminal, the script asks for the path itself.
 3. Done when the script prints the URL. When it says "restarts in 20s", this session lives inside the service and ends with the restart: report the outcome before then.
 
