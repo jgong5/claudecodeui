@@ -43,5 +43,11 @@
   "unsavedChanges": {
     "confirmClose": "You have unsaved changes. Close this file and discard them?",
     "indicator": "Unsaved changes"
+  },
+  "mermaid": {
+    "expand": "Expand diagram",
+    "viewer": "Diagram viewer",
+    "close": "Close diagram viewer",
+    "resetZoom": "Reset zoom"
   }
 }
