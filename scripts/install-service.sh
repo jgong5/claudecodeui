@@ -84,12 +84,13 @@ groups=
 for g in video render kvm docker; do getent group "$g" >/dev/null && groups+="$g "; done
 
 # Paths are quoted: RequiresMountsFor= and ExecStart= split on spaces.
+mounts=$(printf '"%s" ' "$HOME" "$WORKSPACES_ROOT" ${ENV_FILE:+"$ENV_FILE"})
 sudo tee /etc/systemd/system/cloudcli.service >/dev/null <<EOF
 [Unit]
 Description=CloudCLI web UI for Claude Code ($(id -un))
 After=network-online.target
 Wants=network-online.target
-RequiresMountsFor="$HOME" "$WORKSPACES_ROOT"${ENV_FILE:+ "$ENV_FILE"}
+RequiresMountsFor=$mounts
 
 [Service]
 Type=simple
