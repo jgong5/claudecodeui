@@ -28,6 +28,9 @@ while (($#)); do
   esac
 done
 [[ $PORT =~ ^[0-9]+$ ]] || { echo "--port needs a number, got: $PORT" >&2; exit 1; }
+[[ -z $ENV_FILE || -r $ENV_FILE ]] || { echo "--env-file not readable: $ENV_FILE" >&2; exit 1; }
+[[ -n $ENV_FILE || -f $HOME/.claude/.credentials.json ]] ||
+  { echo "Claude has no credentials: pass --env-file, or run 'claude' and /login first" >&2; exit 1; }
 
 command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
 sudo -v
