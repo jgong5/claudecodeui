@@ -46,7 +46,7 @@ const makeActions = (overrides: Partial<SessionRowActions> = {}): SessionRowActi
   activeRename: null,
   activeSessions: new Set<string>(),
   backgroundSessionIds: new Set<string>(),
-  attentionSessionIds: new Set<string>(),
+  sessionAttention: new Map(),
   onRenameDraftChange: noop,
   onStartEditingSession: noop,
   onCancelEditingSession: noop,
@@ -148,14 +148,19 @@ test('a session with only background work running gets the purple dot, not the s
   assert.equal(container.querySelectorAll('time').length, 1, 'the other row shows its age');
 });
 
-test('a session needing attention gets the amber dot', () => {
+test('a marked session gets its pill, left border and bold title, and no amber dot', () => {
   const { container } = renderList(
-    [conversation('s1'), conversation('s2')],
-    makeActions({ attentionSessionIds: new Set(['s2']) }),
+    [conversation('s1'), conversation('s2'), conversation('s3')],
+    makeActions({ sessionAttention: new Map([['s2', 'input'], ['s3', 'done']]) }),
   );
 
-  const dots = container.querySelectorAll('[role="status"].bg-amber-500');
-  assert.equal(dots.length, 1);
-  const rows = container.querySelectorAll('[data-testid="recent-conversation-row"]');
-  assert.equal(rows.length, 2);
+  const rows = [...container.querySelectorAll('[data-testid="recent-conversation-row"]')];
+  const pills = rows.map((row) => row.querySelector('[data-testid="session-attention-pill"]')?.textContent ?? null);
+  assert.deepEqual(pills, [null, 'attention.input', 'attention.done']);
+  assert.ok(!rows[0].className.includes('border-l-[3px]'));
+  assert.ok(rows[1].className.includes('border-l-amber-500'));
+  assert.ok(rows[2].className.includes('border-l-green-500'));
+  assert.ok(rows[1].querySelector('.font-semibold'));
+  assert.equal(container.querySelectorAll('[role="status"].bg-amber-500').length, 0);
+  assert.equal(container.querySelectorAll('.animate-pulse').length, 0);
 });

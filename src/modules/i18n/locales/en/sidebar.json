@@ -56,7 +56,6 @@
     "cancel": "Cancel",
     "clearSearch": "Clear search",
     "openCommandPalette": "Open command palette",
-    "attentionRequiredIndicator": "Session needs attention",
     "backgroundWorkIndicator": "Background work running",
     "externalSessionIndicator": "Started outside CloudCLI",
     "externalSessionEntrypointIndicator": "Started outside CloudCLI ({{entrypoint}})"
@@ -145,6 +144,10 @@
     "matches_other": "{{count}} matches",
     "projectsScanned_one": "{{count}} project scanned",
     "projectsScanned_other": "{{count}} projects scanned"
+  },
+  "attention": {
+    "input": "Needs input",
+    "done": "Done"
   },
   "recent": {
     "title": "Recent conversations",

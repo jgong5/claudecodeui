@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 
 import { Button } from '@/shared/ui';
 import { cn } from '@/shared/utils';
-import type { LLMProvider, MCPServerStatus, Project, ProjectSession, SessionWithProvider, SidebarSessionSelection } from '@/shared/types';
+import type { LLMProvider, MCPServerStatus, Project, ProjectSession, SessionAttention, SessionWithProvider, SidebarSessionSelection } from '@/shared/types';
 import { getTaskIndicatorStatus } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import TaskIndicator from '@/modules/sidebar/TaskIndicator';
 import SidebarProjectSessions from '@/modules/sidebar/SidebarProjectSessions';
@@ -43,7 +43,7 @@ type SidebarProjectItemProps = {
   onLoadMoreSessions: (projectId: string) => void;
   activeSessions: ReadonlySet<string>;
   backgroundSessionIds: ReadonlySet<string>;
-  attentionSessionIds: ReadonlySet<string>;
+  sessionAttention: ReadonlyMap<string, SessionAttention>;
   onNewSession: (project: Project) => void;
   onStartEditingSession: (projectId: string, sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
@@ -94,7 +94,7 @@ function SidebarProjectItem({
   onLoadMoreSessions,
   activeSessions,
   backgroundSessionIds,
-  attentionSessionIds,
+  sessionAttention,
   onNewSession,
   onStartEditingSession,
   onCancelEditingSession,
@@ -449,7 +449,7 @@ function SidebarProjectItem({
         isLoadingMoreSessions={isLoadingMoreSessions}
         activeSessions={activeSessions}
         backgroundSessionIds={backgroundSessionIds}
-        attentionSessionIds={attentionSessionIds}
+        sessionAttention={sessionAttention}
         currentTime={currentTime}
         sessionRenameId={sessionRenameId}
         sessionRenameDraft={sessionRenameDraft}

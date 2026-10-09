@@ -7,9 +7,10 @@ import type { ServerEvent,
   LLMProvider,
   LoadingProgress,
   Project,
-  ProjectSession,IsSessionProcessing } from '@/shared/types';
+  ProjectSession,IsSessionProcessing, SessionAttention, SessionAttentionRow } from '@/shared/types';
 import { mergeProjectSelectionMetadata } from '@/modules/project-workspace/utils/projectSelectionMetadata';
 import { readSelectedProvider } from '@/shared/selectedProvider';
+import { getPageTitle } from '@/shared/utils';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -388,7 +389,10 @@ export function useProjectsState({
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
-  const [attentionSessionIds, setAttentionSessionIds] = useState<Set<string>>(new Set());
+  // Each marked session's attention as the server last reported it, from session
+  // rows and `session_upserted`. Kept apart from `projects` because the
+  // Conversations list reports rows that no loaded project page holds.
+  const [sessionAttention, setSessionAttention] = useState<ReadonlyMap<string, SessionAttention>>(new Map());
   const [activeTab, setActiveTab] = useState<AppTab>(readPersistedTab);
 
   useEffect(() => {
@@ -470,40 +474,22 @@ export function useProjectsState({
     sessionLookupRef.current = null;
   }, [sessionId]);
 
-  const markSessionAttention = useCallback((targetSessionId?: string | null) => {
-    if (!targetSessionId) {
-      return;
-    }
-
-    const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
-    if (targetSessionId === viewedSessionId) {
-      return;
-    }
-
-    setAttentionSessionIds((previous) => {
-      if (previous.has(targetSessionId)) {
-        return previous;
+  // Copy-on-write, so rows keep the same map, and their memo, until a mark moves.
+  const recordSessionAttention = useCallback((rows: readonly SessionAttentionRow[]) => {
+    setSessionAttention((previous) => {
+      let next: Map<string, SessionAttention> | null = null;
+      for (const { id, attention } of rows) {
+        if (((next ?? previous).get(id) ?? null) === (attention ?? null)) {
+          continue;
+        }
+        next ??= new Map(previous);
+        if (attention) {
+          next.set(id, attention);
+        } else {
+          next.delete(id);
+        }
       }
-
-      const next = new Set(previous);
-      next.add(targetSessionId);
-      return next;
-    });
-  }, [sessionId]);
-
-  const clearSessionAttention = useCallback((targetSessionId?: string | null) => {
-    if (!targetSessionId) {
-      return;
-    }
-
-    setAttentionSessionIds((previous) => {
-      if (!previous.has(targetSessionId)) {
-        return previous;
-      }
-
-      const next = new Set(previous);
-      next.delete(targetSessionId);
-      return next;
+      return next ?? previous;
     });
   }, []);
 
@@ -524,6 +510,7 @@ export function useProjectsState({
         return;
       }
 
+      recordSessionAttention(projectData.flatMap(getProjectSessions));
       setProjects((prevProjects) => {
         const projectsWithTaskMaster = mergeTaskMasterCache(projectData, prevProjects);
         const mergedProjects = mergeExpandedSessionPages(prevProjects, projectsWithTaskMaster);
@@ -573,7 +560,7 @@ export function useProjectsState({
         setIsLoadingProjects(false);
       }
     }
-  }, []);
+  }, [recordSessionAttention]);
 
   const refreshProjectsSilently = useCallback(async () => {
     // Keep chat view stable while still syncing sidebar/session metadata in background.
@@ -749,26 +736,6 @@ export function useProjectsState({
         return;
       }
 
-      const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
-        ? event.sessionId
-        : null;
-      const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
-
-      if (
-        eventSessionId
-        && eventSessionId !== viewedSessionId
-        && event.kind !== 'chat_subscribed'
-        && event.kind !== 'loading_progress'
-        && event.kind !== 'session_upserted'
-        && event.kind !== 'status'
-        && event.kind !== 'stream_end'
-        && event.kind !== 'permission_resolved'
-        && event.kind !== 'permission_cancelled'
-        && event.kind !== 'websocket_reconnected'
-      ) {
-        markSessionAttention(eventSessionId);
-      }
-
       if (event.kind !== 'session_upserted') {
         return;
       }
@@ -777,6 +744,8 @@ export function useProjectsState({
       if (!upsert.sessionId || !upsert.session) {
         return;
       }
+
+      recordSessionAttention([{ id: upsert.sessionId, attention: upsert.session.attention }]);
 
       // The transcript of the currently viewed session changed on disk while
       // no run is active here (e.g. edited from another client or the CLI):
@@ -788,8 +757,6 @@ export function useProjectsState({
         && !isSessionProcessing(upsert.sessionId)
       ) {
         setExternalMessageUpdate((prev) => prev + 1);
-      } else {
-        markSessionAttention(upsert.sessionId);
       }
 
       setProjects((previousProjects) => {
@@ -873,7 +840,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
+  }, [isSessionProcessing, navigate, recordSessionAttention, refreshProjectsSilently, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {
@@ -884,9 +851,34 @@ export function useProjectsState({
     };
   }, []);
 
+  const viewedSessionId = selectedSession?.id ?? sessionId ?? null;
+  const viewedAttention = viewedSessionId ? sessionAttention.get(viewedSessionId) : undefined;
+
+  // `done` is cleared once the user can see the session: on opening it, or when
+  // it arrives for the open session while the page is in front. A hidden page
+  // keeps the mark, so the title count still says so. `input` is never cleared
+  // here; answering the prompt does that on the server.
   useEffect(() => {
-    clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
-  }, [clearSessionAttention, selectedSession?.id, sessionId]);
+    if (!viewedSessionId || viewedAttention !== 'done') {
+      return;
+    }
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+      return;
+    }
+
+    api.clearSessionAttention(viewedSessionId).catch((error: unknown) => {
+      console.error(`Error clearing attention for session ${viewedSessionId}:`, error);
+    });
+  }, [viewedAttention, viewedSessionId]);
+
+  const pageTitle = getPageTitle(selectedProject, selectedSession);
+  const markedSessionCount = sessionAttention.size;
+
+  // Set here rather than in the sidebar, whose project list unmounts in its
+  // other views and while it is collapsed.
+  useEffect(() => {
+    document.title = markedSessionCount > 0 ? `(${markedSessionCount}) ${pageTitle}` : pageTitle;
+  }, [markedSessionCount, pageTitle]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1033,7 +1025,6 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
-      clearSessionAttention(session.id);
       setSelectedSession(session);
 
       if (activeTab === 'tasks' || activeTab === 'browser') {
@@ -1055,7 +1046,7 @@ export function useProjectsState({
 
       navigate(`/session/${session.id}`);
     },
-    [activeTab, clearSessionAttention, isMobile, navigate, selectedProject?.projectId],
+    [activeTab, isMobile, navigate, selectedProject?.projectId],
   );
 
   const handleNewSession = useCallback(
@@ -1075,7 +1066,8 @@ export function useProjectsState({
 
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {
-      clearSessionAttention(sessionIdToDelete);
+      // The row is gone, so its mark must stop counting in the title.
+      recordSessionAttention([{ id: sessionIdToDelete, attention: null }]);
 
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
@@ -1086,13 +1078,14 @@ export function useProjectsState({
         prevProjects.map((project) => removeSessionFromProject(project, sessionIdToDelete)),
       );
     },
-    [clearSessionAttention, navigate, selectedSession?.id],
+    [navigate, recordSessionAttention, selectedSession?.id],
   );
 
   const handleSidebarRefresh = useCallback(async () => {
     try {
       const response = await api.projects();
       const freshProjects = (await response.json()) as Project[];
+      recordSessionAttention(freshProjects.flatMap(getProjectSessions));
       const projectsWithTaskMaster = mergeTaskMasterCache(freshProjects, projects);
       const mergedProjects = mergeExpandedSessionPages(projects, projectsWithTaskMaster);
 
@@ -1137,7 +1130,7 @@ export function useProjectsState({
     } catch (error) {
       console.error('Error refreshing sidebar:', error);
     }
-  }, [projects, selectedProject, selectedSession]);
+  }, [projects, recordSessionAttention, selectedProject, selectedSession]);
 
   /**
    * Persists a new title for one session and writes it onto both local copies
@@ -1216,6 +1209,7 @@ export function useProjectsState({
     }
 
     const sessionsPage = (await response.json()) as ProjectSessionPage;
+    recordSessionAttention(sessionsPage.sessions ?? []);
 
     setProjects((previousProjects) =>
       previousProjects.map((candidate) => {
@@ -1226,7 +1220,7 @@ export function useProjectsState({
         return mergeProjectSessionPage(candidate, sessionsPage);
       }),
     );
-  }, [projects]);
+  }, [projects, recordSessionAttention]);
 
   // `projectId` is the DB identifier passed from the sidebar's delete flow
   // after the migration away from folder-derived project names.
@@ -1248,7 +1242,8 @@ export function useProjectsState({
       projects,
       selectedProject,
       selectedSession,
-      attentionSessionIds,
+      sessionAttention,
+      onSessionAttentionRows: recordSessionAttention,
       onProjectSelect: handleProjectSelect,
       onSessionSelect: handleSessionSelect,
       onNewSession: handleNewSession,
@@ -1265,7 +1260,6 @@ export function useProjectsState({
       isMobile,
     }),
     [
-      attentionSessionIds,
       handleNewSession,
       handleProjectDelete,
       handleProjectSelect,
@@ -1277,9 +1271,11 @@ export function useProjectsState({
       isMobile,
       loadingProgress,
       projects,
+      recordSessionAttention,
       settingsInitialTab,
       selectedProject,
       selectedSession,
+      sessionAttention,
       showSettings,
     ],
   );
