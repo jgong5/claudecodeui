@@ -9,8 +9,8 @@ import { useProjectsState } from '@/modules/project-workspace/hooks/useProjectsS
 import { Sidebar } from '@/modules/sidebar';
 
 /**
- * The sidebar's attention pills and the page title count follow the server's
- * mark alone. Opening a `done` session asks the server to clear it, and the
+ * The sidebar's attention pills follow the server's mark alone, and the page
+ * title never counts them. Opening a `done` session asks the server to clear it, and the
  * pill goes when the server's `session_upserted` says so; opening an `input`
  * session clears nothing. Rendered through the real Sidebar, with only its
  * unrelated providers and modals stubbed.
@@ -107,7 +107,10 @@ const subscribe = (listener: (event: never) => void) => {
 
 // The sidebar's project delete runs through a confirmation dialog and the API;
 // the test calls the callback that flow ends in.
-const workspaceHandles: { deleteProject?: (projectId: string) => void } = {};
+const workspaceHandles: {
+  deleteProject?: (projectId: string) => void;
+  marks?: ReadonlyMap<string, SessionAttention>;
+} = {};
 
 function Workspace() {
   const { sidebarSharedProps } = useProjectsState({
@@ -119,6 +122,7 @@ function Workspace() {
   });
   useEffect(() => {
     workspaceHandles.deleteProject = sidebarSharedProps.onProjectDelete;
+    workspaceHandles.marks = sidebarSharedProps.sessionAttention;
   });
   return <Sidebar {...sidebarSharedProps} />;
 }
@@ -154,15 +158,16 @@ afterEach(() => {
   document.title = '';
 });
 
-test('session_upserted drives the pills and title, and only opening a done session clears it', async () => {
+test('session_upserted drives the pills, never the title, and only opening a done session clears it', async () => {
   await renderWorkspace();
   open('viewed');
-  assert.equal(document.title, '(1) title viewed');
+  assert.equal(document.title, 'title viewed');
 
-  // 1. `input` on another session: a pill, and the title counts it.
+  // 1. `input` on another session: a pill beside the `done` one, and the title stays plain.
   await act(async () => upsert('waiting', 'input'));
   assert.equal(pillOf('waiting'), 'Needs input');
-  assert.equal(document.title, '(2) title viewed');
+  assert.equal(pillOf('finished'), 'Done');
+  assert.equal(document.title, 'title viewed');
   assert.ok(rowLink('waiting').className.includes('border-l-amber-500'));
   assert.ok(screen.getByText('title waiting').className.includes('font-semibold'));
   assert.equal(document.querySelectorAll('[role="status"].bg-amber-500').length, 0, 'no amber dot');
@@ -170,7 +175,7 @@ test('session_upserted drives the pills and title, and only opening a done sessi
   // 2. Opening it keeps the pill and calls nothing.
   open('waiting');
   assert.equal(pillOf('waiting'), 'Needs input');
-  assert.equal(document.title, '(2) title waiting');
+  assert.equal(document.title, 'title waiting');
   assert.equal(clearSessionAttention.mock.calls.length, 0);
 
   // 3. Opening the `done` session calls the clear route; the server's upsert removes the pill.
@@ -179,7 +184,7 @@ test('session_upserted drives the pills and title, and only opening a done sessi
   assert.equal(pillOf('finished'), 'Done', 'the row waits for the server');
   await act(async () => upsert('finished', null));
   assert.equal(pillOf('finished'), null);
-  assert.equal(document.title, '(1) title finished');
+  assert.equal(document.title, 'title finished');
 });
 
 test('done for the viewed session is cleared only while the page is in front', async () => {
@@ -190,7 +195,7 @@ test('done for the viewed session is cleared only while the page is in front', a
   await act(async () => upsert('viewed', 'done'));
   assert.equal(clearSessionAttention.mock.calls.length, 0);
   assert.equal(pillOf('viewed'), 'Done');
-  assert.equal(document.title, '(2) title viewed');
+  assert.equal(document.title, 'title viewed');
 
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   await act(async () => upsert('viewed', null));
@@ -224,12 +229,14 @@ test('a done mark set while the page was hidden is cleared once the page is back
   assert.equal(pillOf('viewed'), 'Done', 'the row waits for the server');
 });
 
-test('deleting or archiving a project stops counting its marks in the title', async () => {
+test('deleting or archiving a project drops its marks', async () => {
   await renderWorkspace();
-  assert.equal(document.title, '(1) Repo - CloudCLI UI');
+  assert.deepEqual([...(workspaceHandles.marks ?? [])], [['finished', 'done']]);
+  assert.equal(document.title, 'Repo - CloudCLI UI');
 
   act(() => {
     workspaceHandles.deleteProject?.('project-1');
   });
+  assert.equal(workspaceHandles.marks?.size, 0);
   assert.equal(document.title, 'CloudCLI UI');
 });
