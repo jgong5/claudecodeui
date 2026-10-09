@@ -374,3 +374,32 @@ test('the workflow agent route reads an agent\'s timeline and status from its ru
     assert.equal(missing.error.code, 'WORKFLOW_AGENT_NOT_FOUND');
   });
 });
+
+test('the attention route clears a done mark, leaves input, and the recent feed carries the mark', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createSession('session-done', 'claude', workspacePath);
+    sessionsDb.createSession('session-input', 'claude', workspacePath);
+    sessionsDb.setSessionAttention('session-done', 'done');
+    sessionsDb.setSessionAttention('session-input', 'input');
+
+    const recent = await (await fetch(`${baseUrl}/api/providers/sessions/recent`)).json() as {
+      data: { conversations: Array<{ sessionId: string; attention: string | null }> };
+    };
+    assert.deepEqual(
+      recent.data.conversations.map((row) => [row.sessionId, row.attention]).sort(),
+      [['session-done', 'done'], ['session-input', 'input']],
+    );
+
+    const clearDone = await fetch(`${baseUrl}/api/providers/sessions/session-done/attention`, { method: 'DELETE' });
+    assert.equal(clearDone.status, 200);
+    assert.equal(sessionsDb.getSessionById('session-done')?.attention, null);
+
+    const clearInput = await fetch(`${baseUrl}/api/providers/sessions/session-input/attention`, { method: 'DELETE' });
+    assert.equal(clearInput.status, 200);
+    assert.deepEqual(((await clearInput.json()) as { data: unknown }).data, { sessionId: 'session-input', attention: 'input' });
+    assert.equal(sessionsDb.getSessionById('session-input')?.attention, 'input');
+
+    const missing = await fetch(`${baseUrl}/api/providers/sessions/session-missing/attention`, { method: 'DELETE' });
+    assert.equal(missing.status, 404);
+  });
+});

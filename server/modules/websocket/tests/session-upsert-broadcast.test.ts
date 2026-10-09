@@ -136,3 +136,27 @@ test('a closed socket is skipped', async () => {
     assert.deepEqual(closing.frames, []);
   });
 });
+
+test('a mark set while a watcher batch is still resolving reaches clients last', async () => {
+  await withIsolatedDatabase(async () => {
+    const sessionIds = Array.from({ length: 30 }, (_, index) => `app-batch-${index}`);
+    for (const sessionId of sessionIds) {
+      sessionsDb.createAppSession(sessionId, 'claude', `/workspace/${sessionId}`);
+    }
+
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    // The batch reads the first row now and its display names afterwards...
+    const batch = broadcastSessionUpsertedBatch(sessionIds);
+    // ...while the run registry marks that session and announces it at once.
+    sessionsDb.setSessionAttention('app-batch-0', 'done');
+    await Promise.all([batch, broadcastSessionUpserted('app-batch-0')]);
+
+    const firstSessionFrames = connection.frames.filter((frame) => frame.sessionId === 'app-batch-0');
+    assert.deepEqual(
+      firstSessionFrames.map((frame) => (frame.session as { attention: unknown }).attention),
+      [null, 'done'],
+    );
+  });
+});

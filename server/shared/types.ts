@@ -236,6 +236,19 @@ export type SessionUpsertedProject = {
 export type SessionOrigin = 'app' | 'external';
 
 /**
+ * Why a session wants the user to look at it, stored in `sessions.attention`
+ * and carried on every session row the sidebar reads (`session_upserted`,
+ * project session lists, the recent-conversations feed).
+ *
+ * `input` means a run is waiting on a permission or question prompt; `done`
+ * means a run finished and nobody has opened the session since. NULL means
+ * nothing is pending. The chat run registry sets both values; a client clears
+ * `done` through `DELETE /api/providers/sessions/:sessionId/attention`, which
+ * leaves `input` alone because only answering the prompt clears it.
+ */
+export type SessionAttention = 'input' | 'done';
+
+/**
  * The `session_upserted` sidebar delta, built only by
  * `modules/websocket/services/session-upsert-broadcast.service.ts`.
  *
@@ -260,6 +273,7 @@ export type SessionUpsertedEvent = {
     origin: SessionOrigin;
     /** How an external session's CLI was started (`cli`, `sdk-ts`); NULL when unknown. */
     entrypoint: string | null;
+    attention: SessionAttention | null;
   };
   project: SessionUpsertedProject | null;
   timestamp: string;

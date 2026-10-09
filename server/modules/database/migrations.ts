@@ -479,6 +479,16 @@ const addSessionEntrypointColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'entrypoint', 'TEXT');
 };
 
+/**
+ * Adds `attention`, the per-session mark the chat run registry sets when a
+ * run waits for input or finishes. Existing rows stay NULL: nothing is
+ * pending for them.
+ */
+const addSessionAttentionColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'attention', 'TEXT');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -543,6 +553,7 @@ export const runMigrations = (db: Database) => {
     addForkedFromSessionIdColumn(db);
     addSessionNameSourceColumns(db);
     addSessionEntrypointColumn(db);
+    addSessionAttentionColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

@@ -182,3 +182,37 @@ test('migrations add the naming columns to an upgraded sessions table', async ()
     assert.ok(columns.includes('last_custom_title'));
   });
 });
+
+test('the attention mark changes without touching updated_at, and a restart demotes input to done', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('session-waiting', 'claude', '/workspace/demo-project', 'Waiting', undefined, '2026-01-01T00:00:00.000Z');
+    sessionsDb.createSession('session-finished', 'claude', '/workspace/demo-project', 'Finished', undefined, '2026-01-01T00:00:00.000Z');
+
+    assert.equal(sessionsDb.setSessionAttention('session-waiting', 'input'), true);
+    assert.equal(sessionsDb.setSessionAttention('session-waiting', 'input'), false);
+    assert.equal(sessionsDb.setSessionAttention('session-finished', 'done'), true);
+    assert.equal(sessionsDb.setSessionAttention('session-missing', 'done'), false);
+
+    sessionsDb.demoteInputAttention();
+
+    for (const sessionId of ['session-waiting', 'session-finished']) {
+      const row = sessionsDb.getSessionById(sessionId);
+      assert.equal(row?.attention, 'done');
+      assert.equal(row?.updated_at, '2026-01-01T00:00:00.000Z');
+    }
+  });
+});
+
+test('migrations add the attention column to an upgraded sessions table and keep it on a rerun', async () => {
+  await withIsolatedDatabase(() => {
+    const db = getConnection();
+    db.exec('ALTER TABLE sessions DROP COLUMN attention');
+
+    runMigrations(db);
+    sessionsDb.createSession('session-marked', 'claude', '/workspace/demo-project');
+    sessionsDb.setSessionAttention('session-marked', 'done');
+    runMigrations(db);
+
+    assert.equal(sessionsDb.getSessionById('session-marked')?.attention, 'done');
+  });
+});

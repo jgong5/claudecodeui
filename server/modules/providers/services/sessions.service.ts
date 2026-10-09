@@ -14,6 +14,7 @@ import type {
   FetchHistoryResult,
   LLMProvider,
   NormalizedMessage,
+  SessionAttention,
   SessionCronSummary,
   WorkflowAgentActivity,
 } from '@/shared/types.js';
@@ -73,7 +74,7 @@ type ArchivedSessionListItem = {
 type RecentSessionListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
->;
+> & { attention: SessionAttention | null };
 
 type RecentSessionsPage = {
   conversations: RecentSessionListItem[];
@@ -275,6 +276,7 @@ export const sessionsService = {
         projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
         sessionTitle: session.custom_name?.trim() || session.session_id,
         lastActivity: session.updated_at ?? session.created_at ?? null,
+        attention: session.attention ?? null,
       };
     });
 
@@ -829,5 +831,27 @@ export const sessionsService = {
 
     sessionsDb.updateSessionCustomName(sessionId, summary);
     return { sessionId, summary };
+  },
+
+  /**
+   * Clears a `done` mark once the user has seen the result. An `input` mark
+   * stays: only answering the prompt clears it, and the run registry does.
+   */
+  async clearDoneAttention(sessionId: string): Promise<{ sessionId: string; attention: SessionAttention | null }> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (session.attention !== 'done') {
+      return { sessionId, attention: session.attention ?? null };
+    }
+
+    sessionsDb.setSessionAttention(sessionId, null);
+    await broadcastSessionUpserted(sessionId);
+    return { sessionId, attention: null };
   },
 };
