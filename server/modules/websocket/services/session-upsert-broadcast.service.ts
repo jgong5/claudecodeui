@@ -94,6 +94,10 @@ function sendToConnectedClients(payloads: string[]): void {
 let sendQueue: Promise<unknown> = Promise.resolve();
 
 function sendInCallOrder(payloads: Promise<string[]>): Promise<void> {
+  // A failed row read rejects `payloads` before the queue reaches it. Mark it
+  // handled now so Node does not exit; the caller still gets the rejection
+  // through `sent`.
+  payloads.catch(() => undefined);
   const sent = sendQueue.then(() => payloads).then(sendToConnectedClients);
   sendQueue = sent.catch(() => undefined);
   return sent;
