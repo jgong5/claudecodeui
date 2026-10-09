@@ -333,6 +333,8 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        // No run survives a restart, so no prompt is still waiting for input.
+        sessionsDb.demoteInputAttention();
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

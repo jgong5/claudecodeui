@@ -51,6 +51,7 @@ async function buildSessionUpsertedEvent(
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       origin: row.origin ?? 'app',
       entrypoint: row.entrypoint ?? null,
+      attention: row.attention ?? null,
     },
     project: project
       ? {
@@ -79,12 +80,39 @@ function sendToConnectedClients(payloads: string[]): void {
   });
 }
 
-/** Announces one session. Used by the chat run registry when a run reports its provider-native id. */
-export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: string): Promise<void> {
-  const event = await buildSessionUpsertedEvent(sessionIdOrProviderSessionId);
-  if (event) {
-    sendToConnectedClients([JSON.stringify(event)]);
-  }
+/**
+ * Sends lag behind their row reads by an async display-name lookup, so two
+ * broadcasts for one session could otherwise reach clients in the wrong order
+ * and leave a stale row (an attention mark set by the run registry, then
+ * reverted by a watcher batch read before it). Each broadcast reads its rows
+ * when called and sends in call order, so the last event a client gets
+ * reflects the newest row.
+ *
+ * ponytail: one queue for every session, so a slow lookup delays all sends
+ * behind it; key the queue by session if that ever shows.
+ */
+let sendQueue: Promise<unknown> = Promise.resolve();
+
+function sendInCallOrder(payloads: Promise<string[]>): Promise<void> {
+  // A failed row read rejects `payloads` before the queue reaches it. Mark it
+  // handled now so Node does not exit; the caller still gets the rejection
+  // through `sent`.
+  payloads.catch(() => undefined);
+  const sent = sendQueue.then(() => payloads).then(sendToConnectedClients);
+  sendQueue = sent.catch(() => undefined);
+  return sent;
+}
+
+/**
+ * Announces one session. Used by the chat run registry when a run reports its
+ * provider-native id or changes the attention mark, and by the sessions
+ * service after a fork or an attention clear.
+ */
+export function broadcastSessionUpserted(sessionIdOrProviderSessionId: string): Promise<void> {
+  return sendInCallOrder(
+    buildSessionUpsertedEvent(sessionIdOrProviderSessionId)
+      .then((event) => (event ? [JSON.stringify(event)] : [])),
+  );
 }
 
 /**
@@ -92,18 +120,19 @@ export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: str
  * watcher, whose debounced flush can carry dozens of ids at once — the client
  * set is walked once for the whole batch rather than once per session.
  */
-export async function broadcastSessionUpsertedBatch(
+export function broadcastSessionUpsertedBatch(
   sessionIds: Iterable<string>,
 ): Promise<void> {
-  const payloads: string[] = [];
-  for (const sessionId of sessionIds) {
-    const event = await buildSessionUpsertedEvent(sessionId);
-    if (event) {
-      payloads.push(JSON.stringify(event));
+  return sendInCallOrder((async () => {
+    const payloads: string[] = [];
+    for (const sessionId of sessionIds) {
+      const event = await buildSessionUpsertedEvent(sessionId);
+      if (event) {
+        payloads.push(JSON.stringify(event));
+      }
     }
-  }
-
-  sendToConnectedClients(payloads);
+    return payloads;
+  })());
 }
 
 /** @internal Exported for the broadcast tests, which assert the payload shape directly. */

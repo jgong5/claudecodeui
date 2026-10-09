@@ -5,6 +5,7 @@ import type {
   LLMProvider,
   NormalizedMessage,
   RealtimeClientConnection,
+  SessionAttention,
 } from '@/shared/types.js';
 
 type ChatRunStatus = 'running' | 'completed';
@@ -22,6 +23,9 @@ type ChatRunStatus = 'running' | 'completed';
  * - `lastSeq` / `events`: the per-run event log. Every live event gets a
  *   monotonically increasing `seq` and is buffered so a reconnecting client
  *   can replay exactly the events it missed via `chat.subscribe`.
+ * - `pendingPermissionRequestIds`: prompts sent and not yet resolved or
+ *   cancelled. The session's `input` mark is cleared only when it empties, so
+ *   answering one of two parallel prompts does not hide the other.
  */
 type ChatRun = {
   appSessionId: string;
@@ -30,6 +34,7 @@ type ChatRun = {
   status: ChatRunStatus;
   lastSeq: number;
   events: NormalizedMessage[];
+  pendingPermissionRequestIds: Set<string>;
   writer: ChatSessionWriter;
   startedAt: number;
   completedAt: number | null;
@@ -91,6 +96,51 @@ function evictRunLater(run: ChatRun): void {
 }
 
 /**
+ * Persists a session's attention mark and announces it to every client. A
+ * write that changes nothing is not broadcast.
+ */
+function setAttention(appSessionId: string, attention: SessionAttention | null): void {
+  try {
+    if (!sessionsDb.setSessionAttention(appSessionId, attention)) {
+      return;
+    }
+    void broadcastSessionUpserted(appSessionId).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[ChatRunRegistry] Failed to broadcast attention mark', { appSessionId, attention, error: message });
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[ChatRunRegistry] Failed to persist attention mark', { appSessionId, attention, error: message });
+  }
+}
+
+/**
+ * Moves the session's attention mark as a run's prompts and terminal event
+ * pass through: a prompt marks it `input`, the last answered or cancelled
+ * prompt clears that, and `complete` marks it `done` unless the user aborted.
+ */
+function trackAttention(run: ChatRun, message: NormalizedMessage): void {
+  if (message.kind === 'permission_request' && message.requestId) {
+    run.pendingPermissionRequestIds.add(message.requestId);
+    setAttention(run.appSessionId, 'input');
+  } else if (message.kind === 'permission_resolved' || message.kind === 'permission_cancelled') {
+    // Only a prompt still pending counts: a killed runtime cancels its prompts
+    // after `complete` emptied the set, and that must not clear a `done` mark
+    // or the next run's `input`.
+    if (
+      message.requestId
+      && run.pendingPermissionRequestIds.delete(message.requestId)
+      && run.pendingPermissionRequestIds.size === 0
+    ) {
+      setAttention(run.appSessionId, null);
+    }
+  } else if (message.kind === 'complete') {
+    run.pendingPermissionRequestIds.clear();
+    setAttention(run.appSessionId, message.aborted ? null : 'done');
+  }
+}
+
+/**
  * Decorates one outbound live event for a run and records it in the event log.
  *
  * Responsibilities:
@@ -99,6 +149,7 @@ function evictRunLater(run: ChatRun): void {
  * 2. Assign the next `seq` so clients can detect/replay gaps.
  * 3. Buffer the event for `chat.subscribe` replay.
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
+ * 5. Move the session's attention mark.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
   // Exactly-one-complete contract: when a run is aborted the chat handler
@@ -131,6 +182,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS_PER_RUN);
   }
 
+  trackAttention(run, message);
   return outbound;
 }
 
@@ -213,6 +265,7 @@ export const chatRunRegistry = {
       status: 'running',
       lastSeq: 0,
       events: [],
+      pendingPermissionRequestIds: new Set(),
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
       completedAt: null,
@@ -230,6 +283,9 @@ export const chatRunRegistry = {
     });
 
     runs.set(input.appSessionId, run);
+    // A new run supersedes whatever the last one left: its prompts are gone
+    // and its result is no longer the latest.
+    setAttention(input.appSessionId, null);
     return run;
   },
 

@@ -834,6 +834,15 @@ router.delete(
   }),
 );
 
+router.delete(
+  '/sessions/:sessionId/attention',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const result = await sessionsService.clearDoneAttention(sessionId);
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
 router.post(
   '/sessions/:sessionId/restore',
   asyncHandler(async (req: Request, res: Response) => {

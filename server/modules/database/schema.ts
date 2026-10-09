@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- normally. Informational only: a fork is a fully independent provider
     -- session, and deleting the source does not affect it.
     forked_from_session_id TEXT,
+    -- 'input' while a run waits on a prompt, 'done' once a run finished and
+    -- nobody has opened the session since, NULL otherwise. Written without
+    -- touching updated_at, so a mark never reorders the sidebar.
+    attention TEXT,
     isArchived BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

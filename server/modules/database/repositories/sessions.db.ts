@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import type { SessionOrigin } from '@/shared/types.js';
+import type { SessionAttention, SessionOrigin } from '@/shared/types.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
 
 /**
@@ -36,6 +36,8 @@ type SessionRow = {
   // database does.
   /** How the provider CLI was started, from the transcript; NULL when unknown. */
   entrypoint?: string | null;
+  /** What the session wants from the user; NULL when nothing is pending. */
+  attention?: SessionAttention | null;
   /** Not a column: derived from the two ids when the row is read. */
   origin?: SessionOrigin;
   isArchived: number;
@@ -49,7 +51,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, last_custom_title, model, effort, forked_from_session_id, entrypoint, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, last_custom_title, model, effort, forked_from_session_id, entrypoint, attention, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -503,6 +505,30 @@ export const sessionsDb = {
        SET effort = ?
        WHERE session_id = ?`
     ).run(effort, sessionId);
+  },
+
+  /**
+   * Sets or clears one session's attention mark and reports whether it
+   * changed, so the chat run registry broadcasts only real changes.
+   *
+   * Leaves `updated_at` alone on purpose: the mark is not activity, and
+   * bumping it would reorder the sidebar every time a prompt is answered.
+   */
+  setSessionAttention(sessionId: string, attention: SessionAttention | null): boolean {
+    const db = getConnection();
+    return db
+      .prepare('UPDATE sessions SET attention = ? WHERE session_id = ? AND attention IS NOT ?')
+      .run(attention, sessionId, attention).changes > 0;
+  },
+
+  /**
+   * Turns every `input` mark into `done`. Called once at startup: no run
+   * survives a restart, so no prompt is still waiting, but the user has not
+   * seen how those runs ended.
+   */
+  demoteInputAttention(): void {
+    const db = getConnection();
+    db.prepare("UPDATE sessions SET attention = 'done' WHERE attention = 'input'").run();
   },
 
   /**

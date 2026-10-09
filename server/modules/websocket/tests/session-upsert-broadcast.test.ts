@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import {
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,
@@ -134,5 +134,72 @@ test('a closed socket is skipped', async () => {
 
     assert.equal(open.frames.length, 1);
     assert.deepEqual(closing.frames, []);
+  });
+});
+
+test('a mark set while a watcher batch is still resolving reaches clients last', async () => {
+  await withIsolatedDatabase(async () => {
+    const sessionIds = Array.from({ length: 30 }, (_, index) => `app-batch-${index}`);
+    for (const sessionId of sessionIds) {
+      sessionsDb.createAppSession(sessionId, 'claude', `/workspace/${sessionId}`);
+    }
+
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    // The batch reads the first row now and its display names afterwards...
+    const batch = broadcastSessionUpsertedBatch(sessionIds);
+    // ...while the run registry marks that session and announces it at once.
+    sessionsDb.setSessionAttention('app-batch-0', 'done');
+    await Promise.all([batch, broadcastSessionUpserted('app-batch-0')]);
+
+    const firstSessionFrames = connection.frames.filter((frame) => frame.sessionId === 'app-batch-0');
+    assert.deepEqual(
+      firstSessionFrames.map((frame) => (frame.session as { attention: unknown }).attention),
+      [null, 'done'],
+    );
+  });
+});
+
+test('a row read that throws while a batch is queued rejects to its caller and the queue keeps going', async () => {
+  await withIsolatedDatabase(async () => {
+    const sessionIds = Array.from({ length: 30 }, (_, index) => `app-slow-${index}`);
+    for (const sessionId of sessionIds) {
+      sessionsDb.createAppSession(sessionId, 'claude', `/workspace/${sessionId}`);
+    }
+    // Without a stored name each display name is read from the project's
+    // package.json, so the batch waits on the filesystem.
+    getConnection().exec('UPDATE projects SET custom_project_name = NULL');
+
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    const unhandled: unknown[] = [];
+    const recordUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', recordUnhandled);
+    const readRow = sessionsDb.getSessionByProviderSessionId;
+    sessionsDb.getSessionByProviderSessionId = (id: string) => {
+      if (id === 'app-broken') {
+        throw new Error('disk I/O error');
+      }
+      return readRow.call(sessionsDb, id);
+    };
+
+    try {
+      const batch = broadcastSessionUpsertedBatch(sessionIds);
+      const failed = assert.rejects(broadcastSessionUpserted('app-broken'), /disk I\/O error/);
+      // Give the event loop turns while the batch still resolves, which is
+      // when Node reports a rejection nobody handles.
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      await new Promise((resolve) => { setImmediate(resolve); });
+      await batch;
+      await failed;
+      await broadcastSessionUpserted('app-slow-0');
+
+      assert.deepEqual(unhandled, []);
+      assert.equal(connection.frames.length, sessionIds.length + 1);
+    } finally {
+      sessionsDb.getSessionByProviderSessionId = readRow;
+      process.off('unhandledRejection', recordUnhandled);
+    }
   });
 });

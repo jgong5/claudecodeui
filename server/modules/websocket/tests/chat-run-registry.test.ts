@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 
@@ -309,5 +309,103 @@ test('startRun rejects a second concurrent run for the same session', async () =
       userId: null,
     });
     assert.ok(third);
+  });
+});
+
+/** Waits for the async `session_upserted` broadcasts to reach the fake socket. */
+async function waitForUpserts(connection: FakeConnection, count: number): Promise<Array<Record<string, unknown>>> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const upserts = connection.frames.filter((frame) => frame.kind === 'session_upserted');
+    if (upserts.length >= count) {
+      return upserts;
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 5); });
+  }
+  return connection.frames.filter((frame) => frame.kind === 'session_upserted');
+}
+
+function readAttention(upserts: Array<Record<string, unknown>>): unknown[] {
+  return upserts.map((frame) => (frame.session as { attention?: unknown }).attention);
+}
+
+/** Pins updated_at far in the past so a write that bumps it cannot hide inside the same second. */
+function pinUpdatedAt(sessionId: string): string | undefined {
+  getConnection()
+    .prepare("UPDATE sessions SET updated_at = '2026-01-01 00:00:00' WHERE session_id = ?")
+    .run(sessionId);
+  return sessionsDb.getSessionById(sessionId)?.updated_at;
+}
+
+test('a prompt marks the session input, answering clears it, and complete marks it done', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-attention-1', 'claude', '/workspace/demo');
+    const updatedAt = pinUpdatedAt('app-attention-1');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-attention-1',
+      provider: 'claude',
+      providerSessionId: 'native-attention-1',
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    run.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'native-attention-1', requestId: 'req-1', toolName: 'Bash' });
+    assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, 'input');
+    run.writer.send({ kind: 'permission_resolved', provider: 'claude', sessionId: 'native-attention-1', requestId: 'req-1' });
+    assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, null);
+    run.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'native-attention-1', exitCode: 0 });
+    assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, 'done');
+
+    const upserts = await waitForUpserts(connection, 3);
+    assert.deepEqual(readAttention(upserts), ['input', null, 'done']);
+    assert.equal(sessionsDb.getSessionById('app-attention-1')?.updated_at, updatedAt);
+  });
+});
+
+test('input holds until every prompt is settled, an abort clears the mark, and a new run clears done', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-attention-2', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    const startRun = () => chatRunRegistry.startRun({
+      appSessionId: 'app-attention-2',
+      provider: 'claude',
+      providerSessionId: 'native-attention-2',
+      connection,
+      userId: null,
+    });
+    const readRow = () => sessionsDb.getSessionById('app-attention-2')?.attention;
+
+    const aborted = startRun();
+    assert.ok(aborted);
+    aborted.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'n', requestId: 'req-a' });
+    aborted.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'n', requestId: 'req-b' });
+    aborted.writer.send({ kind: 'permission_resolved', provider: 'claude', sessionId: 'n', requestId: 'req-a' });
+    assert.equal(readRow(), 'input');
+    chatRunRegistry.completeRun('app-attention-2', { exitCode: 1, aborted: true });
+    assert.equal(readRow(), null);
+    // The killed runtime still cancels its prompt afterwards; nothing changes.
+    aborted.writer.send({ kind: 'permission_cancelled', provider: 'claude', sessionId: 'n', requestId: 'req-b' });
+
+    const finished = startRun();
+    assert.ok(finished);
+    finished.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'n', requestId: 'req-c' });
+    finished.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'n', exitCode: 0 });
+    assert.equal(readRow(), 'done');
+    // A prompt the runtime cancels after completing does not hide the result.
+    finished.writer.send({ kind: 'permission_cancelled', provider: 'claude', sessionId: 'n', requestId: 'req-c' });
+    assert.equal(readRow(), 'done');
+
+    assert.ok(startRun());
+    assert.equal(readRow(), null);
+
+    // One broadcast per change: input, cleared by the abort, input, done,
+    // cleared by the new run.
+    await waitForUpserts(connection, 5);
+    // Long enough for a stray extra broadcast to land.
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    assert.deepEqual(readAttention(await waitForUpserts(connection, 5)), ['input', null, 'input', 'done', null]);
   });
 });
