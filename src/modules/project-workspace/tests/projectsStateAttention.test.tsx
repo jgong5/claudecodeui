@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import type { Project, ProjectSession, SessionAttention } from '@/shared/types';
@@ -105,6 +105,10 @@ const subscribe = (listener: (event: never) => void) => {
   };
 };
 
+// The sidebar's project delete runs through a confirmation dialog and the API;
+// the test calls the callback that flow ends in.
+const workspaceHandles: { deleteProject?: (projectId: string) => void } = {};
+
 function Workspace() {
   const { sidebarSharedProps } = useProjectsState({
     sessionId: undefined,
@@ -112,6 +116,9 @@ function Workspace() {
     subscribe,
     isMobile: false,
     isSessionProcessing: () => false,
+  });
+  useEffect(() => {
+    workspaceHandles.deleteProject = sidebarSharedProps.onProjectDelete;
   });
   return <Sidebar {...sidebarSharedProps} />;
 }
@@ -215,4 +222,14 @@ test('a done mark set while the page was hidden is cleared once the page is back
   });
   assert.deepEqual(clearSessionAttention.mock.calls, [['viewed']]);
   assert.equal(pillOf('viewed'), 'Done', 'the row waits for the server');
+});
+
+test('deleting or archiving a project stops counting its marks in the title', async () => {
+  await renderWorkspace();
+  assert.equal(document.title, '(1) Repo - CloudCLI UI');
+
+  act(() => {
+    workspaceHandles.deleteProject?.('project-1');
+  });
+  assert.equal(document.title, 'CloudCLI UI');
 });

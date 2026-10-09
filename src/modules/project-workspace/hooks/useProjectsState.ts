@@ -1246,9 +1246,12 @@ export function useProjectsState({
         navigate('/');
       }
 
+      // Its rows are gone, so their marks must stop counting in the title.
+      const removedSessions = projectsRef.current.find((project) => project.projectId === projectId)?.sessions ?? [];
+      recordSessionAttention(removedSessions.map(({ id }) => ({ id, attention: null })));
       setProjects((prevProjects) => prevProjects.filter((project) => project.projectId !== projectId));
     },
-    [navigate, selectedProject?.projectId],
+    [navigate, recordSessionAttention, selectedProject?.projectId],
   );
 
   const sidebarSharedProps = useMemo(
