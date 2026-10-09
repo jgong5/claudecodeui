@@ -78,7 +78,10 @@ export type ProjectSessionsPageApiView = {
 };
 
 const DEFAULT_PROJECT_SESSIONS_PAGE_SIZE = 20;
-const MAX_PROJECT_SESSIONS_PAGE_SIZE = 200;
+// The sidebar's "Load more" re-reads every loaded row from offset 0, so this cap
+// bounds how many sessions it can show.
+// ponytail: O(N) re-read per click; switch to keyset pagination (last lastActivity + id) if large projects get slow.
+const MAX_PROJECT_SESSIONS_PAGE_SIZE = 10000;
 
 /**
  * Generate better display name from path.

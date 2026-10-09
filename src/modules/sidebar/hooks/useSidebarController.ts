@@ -125,6 +125,8 @@ export function useSidebarController({
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [optimisticStarByProjectId, setOptimisticStarByProjectId] = useState<Map<string, boolean>>(new Map());
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
+  // Projects with a load-more request in flight; guards against a second request.
+  const loadingMoreProjectIdsRef = useRef<Set<string>>(new Set());
   const searchSeqRef = useRef(0);
   const recentConversationsSeqRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -664,21 +666,13 @@ export function useSidebarController({
       return;
     }
 
-    let shouldLoad = false;
-    setLoadingMoreProjects((previous) => {
-      if (previous.has(projectId)) {
-        return previous;
-      }
-
-      shouldLoad = true;
-      const next = new Set(previous);
-      next.add(projectId);
-      return next;
-    });
-
-    if (!shouldLoad) {
+    // Decide from a ref, not inside a state updater: React defers an updater
+    // whenever the sidebar has an update pending, which used to skip the fetch.
+    if (loadingMoreProjectIdsRef.current.has(projectId)) {
       return;
     }
+    loadingMoreProjectIdsRef.current.add(projectId);
+    setLoadingMoreProjects((previous) => new Set(previous).add(projectId));
 
     try {
       await onLoadMoreSessions(projectId);
@@ -686,6 +680,7 @@ export function useSidebarController({
       console.error('[Sidebar] Failed to load more sessions:', error);
       alert(t('messages.refreshError'));
     } finally {
+      loadingMoreProjectIdsRef.current.delete(projectId);
       setLoadingMoreProjects((previous) => {
         const next = new Set(previous);
         next.delete(projectId);

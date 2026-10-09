@@ -213,12 +213,11 @@ const mergeProjectSessionPage = (
     sessions: mergeSessionProviderLists(existingProject.sessions ?? [], sessionsPage.sessions ?? []),
   };
 
-  const totalSessions = Number(sessionsPage.sessionMeta?.total ?? existingProject.sessionMeta?.total ?? 0);
+  // The page starts at offset 0, so the server's `hasMore` and `total` describe
+  // the merged list; counting local rows would drift after upserts and deletes.
   mergedProject.sessionMeta = {
     ...existingProject.sessionMeta,
     ...sessionsPage.sessionMeta,
-    total: totalSessions,
-    hasMore: countLoadedProjectSessions(mergedProject) < totalSessions,
   };
 
   return mergedProject;
@@ -1197,15 +1196,11 @@ export function useProjectsState({
       return;
     }
 
-    const loadedCount = countLoadedProjectSessions(project);
-    const totalCount = Number(project.sessionMeta?.total ?? 0);
-    if (totalCount > 0 && loadedCount >= totalCount) {
-      return;
-    }
-
+    // Re-read from the top rather than from `offset = loaded`: upserts, deletes
+    // and reorders shift the server's order, so an offset would skip or repeat rows.
     const response = await api.projectSessions(projectId, {
-      limit: 20,
-      offset: loadedCount,
+      limit: countLoadedProjectSessions(project) + 20,
+      offset: 0,
     });
 
     if (!response.ok) {
