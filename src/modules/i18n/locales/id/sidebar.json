@@ -55,8 +55,7 @@
     "save": "Simpan",
     "cancel": "Batal",
     "clearSearch": "Hapus pencarian",
-    "openCommandPalette": "Buka palet perintah",
-    "attentionRequiredIndicator": "Sesi memerlukan perhatian"
+    "openCommandPalette": "Buka palet perintah"
   },
   "navigation": {
     "chat": "Chat",
