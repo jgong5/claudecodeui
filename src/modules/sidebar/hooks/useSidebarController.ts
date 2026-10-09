@@ -1047,6 +1047,12 @@ export function useSidebarController({
       const response = await api.deleteProject(project.projectId, deleteData);
 
       if (response.ok) {
+        // Rows only the Conversations list loaded are gone too; drop their marks.
+        onSessionAttentionRows?.(
+          recentConversations
+            .filter((conversation) => conversation.projectId === project.projectId)
+            .map(({ sessionId }) => ({ id: sessionId, attention: null })),
+        );
         onProjectDelete?.(project.projectId);
       } else {
         const data = (await response.json()) as { error?: string | { message?: string } };
@@ -1065,7 +1071,7 @@ export function useSidebarController({
         return next;
       });
     }
-  }, [pendingDeletion, onProjectDelete, t]);
+  }, [pendingDeletion, onProjectDelete, onSessionAttentionRows, recentConversations, t]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
