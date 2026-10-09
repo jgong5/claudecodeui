@@ -856,9 +856,8 @@ export function useProjectsState({
 
   // `done` is cleared once the user can see the session: on opening it, when it
   // arrives for the open session while the page is in front, or when the page
-  // comes back to the front. A hidden page keeps the mark, so the title count
-  // still says so. `input` is never cleared here; answering the prompt does
-  // that on the server.
+  // comes back to the front. A hidden page keeps the mark. `input` is never
+  // cleared here; answering the prompt does that on the server.
   useEffect(() => {
     if (!viewedSessionId || viewedAttention !== 'done') {
       return;
@@ -886,13 +885,12 @@ export function useProjectsState({
   }, [viewedAttention, viewedSessionId]);
 
   const pageTitle = getPageTitle(selectedProject, selectedSession);
-  const markedSessionCount = sessionAttention.size;
 
   // Set here rather than in the sidebar, whose project list unmounts in its
   // other views and while it is collapsed.
   useEffect(() => {
-    document.title = markedSessionCount > 0 ? `(${markedSessionCount}) ${pageTitle}` : pageTitle;
-  }, [markedSessionCount, pageTitle]);
+    document.title = pageTitle;
+  }, [pageTitle]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1080,7 +1078,7 @@ export function useProjectsState({
 
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {
-      // The row is gone, so its mark must stop counting in the title.
+      // The row is gone, so drop its mark.
       recordSessionAttention([{ id: sessionIdToDelete, attention: null }]);
 
       if (selectedSession?.id === sessionIdToDelete) {
@@ -1246,7 +1244,7 @@ export function useProjectsState({
         navigate('/');
       }
 
-      // Its rows are gone, so their marks must stop counting in the title.
+      // Its rows are gone, so drop their marks.
       const removedSessions = projectsRef.current.find((project) => project.projectId === projectId)?.sessions ?? [];
       recordSessionAttention(removedSessions.map(({ id }) => ({ id, attention: null })));
       setProjects((prevProjects) => prevProjects.filter((project) => project.projectId !== projectId));
