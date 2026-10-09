@@ -190,3 +190,29 @@ test('done for the viewed session is cleared only while the page is in front', a
   await act(async () => upsert('viewed', 'done'));
   assert.deepEqual(clearSessionAttention.mock.calls, [['viewed']]);
 });
+
+test('a done mark set while the page was hidden is cleared once the page is back in front', async () => {
+  await renderWorkspace();
+  open('viewed');
+
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  await act(async () => upsert('viewed', 'done'));
+  assert.equal(clearSessionAttention.mock.calls.length, 0);
+
+  // Becoming visible without focus is not enough.
+  visibility.mockReturnValue('visible');
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal(clearSessionAttention.mock.calls.length, 0);
+
+  // Focus arrives: one request, even though both events fire.
+  focus.mockReturnValue(true);
+  act(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.deepEqual(clearSessionAttention.mock.calls, [['viewed']]);
+  assert.equal(pillOf('viewed'), 'Done', 'the row waits for the server');
+});

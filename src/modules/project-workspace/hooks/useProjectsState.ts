@@ -854,21 +854,35 @@ export function useProjectsState({
   const viewedSessionId = selectedSession?.id ?? sessionId ?? null;
   const viewedAttention = viewedSessionId ? sessionAttention.get(viewedSessionId) : undefined;
 
-  // `done` is cleared once the user can see the session: on opening it, or when
-  // it arrives for the open session while the page is in front. A hidden page
-  // keeps the mark, so the title count still says so. `input` is never cleared
-  // here; answering the prompt does that on the server.
+  // `done` is cleared once the user can see the session: on opening it, when it
+  // arrives for the open session while the page is in front, or when the page
+  // comes back to the front. A hidden page keeps the mark, so the title count
+  // still says so. `input` is never cleared here; answering the prompt does
+  // that on the server.
   useEffect(() => {
     if (!viewedSessionId || viewedAttention !== 'done') {
       return;
     }
-    if (document.visibilityState !== 'visible' || !document.hasFocus()) {
-      return;
-    }
 
-    api.clearSessionAttention(viewedSessionId).catch((error: unknown) => {
-      console.error(`Error clearing attention for session ${viewedSessionId}:`, error);
-    });
+    // Returning to a tab fires both events; one request is enough.
+    let requested = false;
+    const clearIfInFront = () => {
+      if (requested || document.visibilityState !== 'visible' || !document.hasFocus()) {
+        return;
+      }
+      requested = true;
+      api.clearSessionAttention(viewedSessionId).catch((error: unknown) => {
+        console.error(`Error clearing attention for session ${viewedSessionId}:`, error);
+      });
+    };
+
+    clearIfInFront();
+    document.addEventListener('visibilitychange', clearIfInFront);
+    window.addEventListener('focus', clearIfInFront);
+    return () => {
+      document.removeEventListener('visibilitychange', clearIfInFront);
+      window.removeEventListener('focus', clearIfInFront);
+    };
   }, [viewedAttention, viewedSessionId]);
 
   const pageTitle = getPageTitle(selectedProject, selectedSession);
