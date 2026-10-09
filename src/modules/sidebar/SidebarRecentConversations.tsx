@@ -6,6 +6,7 @@ import { Button, LLMProviderLogo, Tooltip } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import type { ProjectSession, RecentConversationListItem, SessionRowActions } from '@/shared/types';
 import { formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatting';
+import SessionAttentionPill from '@/modules/sidebar/SessionAttentionPill';
 import SessionOptions from '@/modules/sidebar/SessionOptions';
 
 type SidebarRecentConversationsProps = {
@@ -111,8 +112,7 @@ export default function SidebarRecentConversations({
           const age = formatCompactAge(conversation.lastActivity, currentTime);
           const hasBackgroundWork = sessionActions.backgroundSessionIds.has(conversation.sessionId);
           const isProcessing = sessionActions.activeSessions.has(conversation.sessionId) && !hasBackgroundWork;
-          const showAttentionIndicator =
-            sessionActions.attentionSessionIds.has(conversation.sessionId) && !isSelected;
+          const attention = sessionActions.sessionAttention.get(conversation.sessionId) ?? null;
           // Resolved per row so a keystroke in one rename does not redraw the rest.
           const rename = sessionActions.activeRename;
           const sessionRename =
@@ -132,26 +132,6 @@ export default function SidebarRecentConversations({
 
           return (
             <div key={conversation.sessionId} className="group relative">
-              {/*
-                * Only the amber "needs attention" dot, and the spinner below. The
-                * Projects row also has a green dot for a session touched recently,
-                * which carries no information in a list ordered by recency.
-                */}
-              {showAttentionIndicator && (
-                <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
-                  <Tooltip
-                    content={t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })}
-                    position="right"
-                  >
-                    <div
-                      role="status"
-                      aria-label={t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })}
-                      className="h-2 w-2 animate-pulse rounded-full bg-amber-500"
-                    />
-                  </Tooltip>
-                </div>
-              )}
-
               <a
                 href={`/session/${conversation.sessionId}`}
                 onClick={handleClick}
@@ -161,6 +141,8 @@ export default function SidebarRecentConversations({
                   isSelected
                     ? 'bg-primary/10 text-foreground'
                     : 'text-foreground hover:bg-accent/60',
+                  attention === 'input' && 'border-l-[3px] border-l-amber-500',
+                  attention === 'done' && 'border-l-[3px] border-l-green-500',
                 )}
               >
                 <span className={cn(
@@ -171,8 +153,11 @@ export default function SidebarRecentConversations({
                 </span>
 
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-normal leading-4">
-                    {conversation.sessionTitle}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className={cn('truncate text-[13px] leading-4', attention ? 'font-semibold' : 'font-normal')}>
+                      {conversation.sessionTitle}
+                    </span>
+                    {attention && <SessionAttentionPill attention={attention} t={t} />}
                   </span>
                   <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
                     <span className="truncate">{conversation.projectDisplayName}</span>

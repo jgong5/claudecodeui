@@ -245,6 +245,10 @@ export const api = {
   // `upToAnchorId` (all of it when omitted). The source is left untouched.
   forkSession: (sessionId: string, body: { upToAnchorId?: string; title?: string } = {}) =>
     post(`/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, body),
+  // Clears a `done` mark once the user has seen the session; `input` stays.
+  // The server announces the change as `session_upserted`.
+  clearSessionAttention: (sessionId: string) =>
+    del(`/api/providers/sessions/${encodeURIComponent(sessionId)}/attention`),
   renameSession: (sessionId: string, summary: string) =>
     put(`/api/providers/sessions/${sessionId}`, { summary }),
   // What one agent of a workflow run did, read from its transcript on demand

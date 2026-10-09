@@ -55,8 +55,7 @@
     "save": "Speichern",
     "cancel": "Abbrechen",
     "clearSearch": "Suche leeren",
-    "openCommandPalette": "Befehlspalette öffnen",
-    "attentionRequiredIndicator": "Sitzung erfordert Aufmerksamkeit"
+    "openCommandPalette": "Befehlspalette öffnen"
   },
   "navigation": {
     "chat": "Chat",

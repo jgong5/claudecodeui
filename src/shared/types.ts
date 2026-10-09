@@ -67,6 +67,17 @@ export type ScheduledMessage = {
   createdAt: string;
 };
 
+/**
+ * Why the server says a session wants the user: `input` while a run waits on a
+ * permission or question prompt, `done` once a run finished and nobody has
+ * opened the session since. Rows carry it as `attention`, null when nothing is
+ * pending; only the server sets or clears it.
+ */
+export type SessionAttention = 'input' | 'done';
+
+/** The two fields of a session row the attention map is built from; the Conversations list maps its rows to this shape to report them. */
+export type SessionAttentionRow = Pick<ProjectSession, 'id' | 'attention'>;
+
 /** A single conversation inside a project, as returned by the sessions API and rendered in the sidebar and chat. */
 export type ProjectSession = {
   id: string;
@@ -84,6 +95,8 @@ export type ProjectSession = {
   origin?: 'app' | 'external';
   /** How an external session's CLI was started (`cli`, `sdk-ts`); null when the transcript does not say. */
   entrypoint?: string | null;
+  /** The server's attention mark; absent on rows the client made up, which counts as null. */
+  attention?: SessionAttention | null;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
@@ -1506,8 +1519,8 @@ export type SessionRowActions = {
   activeSessions: ReadonlySet<string>;
   /** The subset of `activeSessions` that only has background tasks running, which show the purple dot instead of the spinner. */
   backgroundSessionIds: ReadonlySet<string>;
-  /** Sessions waiting on the user, which show the amber dot. */
-  attentionSessionIds: ReadonlySet<string>;
+  /** Each marked session's attention as the server last reported it; a row with an entry shows the Needs input or Done pill. */
+  sessionAttention: ReadonlyMap<string, SessionAttention>;
   onRenameDraftChange: (draft: string) => void;
   onStartEditingSession: (projectId: string, sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
@@ -1598,7 +1611,7 @@ export type ArchivedSessionListItem = {
 export type RecentConversationListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
->;
+> & { attention?: SessionAttention | null };
 
 /**
  * The rename the sidebar currently has open, if any.

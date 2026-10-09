@@ -8,7 +8,7 @@ import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarControll
 import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useBackgroundSessionIdSet, useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
-import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
+import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SessionAttention, SessionAttentionRow, SidebarProjectListProps } from '@/shared/types';
 import SidebarCollapsed from '@/modules/sidebar/SidebarCollapsed';
 import SidebarContent from '@/modules/sidebar/SidebarContent';
 import SidebarModals from '@/modules/sidebar/SidebarModals';
@@ -17,7 +17,9 @@ type SidebarProps = {
   projects: Project[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
-  attentionSessionIds: ReadonlySet<string>;
+  sessionAttention: ReadonlyMap<string, SessionAttention>;
+  /** Feeds rows the Conversations list fetched into the attention map. */
+  onSessionAttentionRows: (rows: readonly SessionAttentionRow[]) => void;
   onProjectSelect: (project: Project) => void;
   onSessionSelect: (session: ProjectSession) => void;
   onNewSession: (project: Project) => void;
@@ -46,7 +48,8 @@ function Sidebar({
   projects,
   selectedProject,
   selectedSession,
-  attentionSessionIds,
+  sessionAttention,
+  onSessionAttentionRows,
   onProjectSelect,
   onSessionSelect,
   onNewSession,
@@ -161,6 +164,7 @@ function Sidebar({
     onSessionDelete,
     onLoadMoreSessions,
     onProjectDelete,
+    onSessionAttentionRows,
     setCurrentProject,
     setSidebarVisible: (visible) => setPreference('sidebarVisible', visible),
     sidebarVisible,
@@ -210,7 +214,7 @@ function Sidebar({
     loadingMoreProjects,
     activeSessions,
     backgroundSessionIds,
-    attentionSessionIds,
+    sessionAttention,
     isProjectStarred,
     onRenameDraftChange: updateRenameDraft,
     onToggleProject: toggleProject,

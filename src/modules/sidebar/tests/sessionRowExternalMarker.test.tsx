@@ -31,7 +31,7 @@ const renderRow = (session: Record<string, unknown>) => render(
     selectedSession: null,
     isProcessing: false,
     hasBackgroundWork: false,
-    needsAttention: false,
+    attention: null,
     currentTime: new Date('2026-08-21T10:00:00.000Z'),
     isEditing: false,
     renameDraft: '',

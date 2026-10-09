@@ -54,8 +54,7 @@
     "save": "儲存",
     "cancel": "取消",
     "clearSearch": "清除搜尋",
-    "openCommandPalette": "開啟指令面板",
-    "attentionRequiredIndicator": "工作階段需要處理"
+    "openCommandPalette": "開啟指令面板"
   },
   "navigation": {
     "chat": "聊天",
@@ -166,5 +165,9 @@
     "archiveSessions_other": "封存 {{count}} 個工作階段",
     "archiveSessionsNotice_one": "封存會將所選工作階段移出使用中清單，但保留其歷史記錄。",
     "archiveSessionsNotice_other": "封存會將所選工作階段移出使用中清單，但保留其歷史記錄。"
+  },
+  "attention": {
+    "input": "需要輸入",
+    "done": "已完成"
   }
 }
