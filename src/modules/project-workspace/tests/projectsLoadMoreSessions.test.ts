@@ -103,3 +103,19 @@ test('the server decides hasMore, even when local rows already reach the stale t
   assert.deepEqual(loadedIds(project), ['new', 'a', 'b', 'c']);
   assert.deepEqual(project.sessionMeta, { hasMore: true, total: 30 });
 });
+
+test('a row deleted on the server does not hide the button while the server has more', async () => {
+  // `gone` stays local after its server-side delete, so the merged rows reach
+  // `total` and a local count would say there is nothing left.
+  const result = await renderWithProject(buildProject(['gone', 'a'], { hasMore: true, total: 24 }));
+  const serverIds = ['a', ...Array.from({ length: 21 }, (_, index) => `s${index}`)];
+  respondWithPage(serverIds, { hasMore: true, total: 23 });
+
+  await act(async () => {
+    await result.current.loadMoreProjectSessions('project-1');
+  });
+
+  const [project] = result.current.projects;
+  assert.equal(project.sessions?.length, 23);
+  assert.deepEqual(project.sessionMeta, { hasMore: true, total: 23 });
+});
