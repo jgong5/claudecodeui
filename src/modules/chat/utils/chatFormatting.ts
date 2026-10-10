@@ -1,3 +1,5 @@
+import type { ChatMessage } from '@/shared/types';
+
 export function normalizeInlineCodeFences(text: string) {
   if (!text || typeof text !== 'string') return text;
   try {
@@ -63,4 +65,18 @@ export function formatUsageLimitText(text: string) {
   } catch {
     return text;
   }
+}
+
+/**
+ * Formats a transcript message time in the browser's timezone and locale.
+ * The label drops the date on `now`'s local day and never shows seconds; the
+ * title is the full date and time, for a hover tooltip.
+ */
+export function formatMessageTime(timestamp: ChatMessage['timestamp'], now: Date) {
+  const date = new Date(timestamp);
+  const time: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+  const label = date.toDateString() === now.toDateString()
+    ? date.toLocaleTimeString(undefined, time)
+    : date.toLocaleString(undefined, { month: 'numeric', day: 'numeric', ...time });
+  return { label, title: date.toLocaleString() };
 }
