@@ -296,15 +296,17 @@ export const chatRunRegistry = {
 
   /**
    * Marks a session `done`. Takes the app id or the provider-native id, since
-   * runtimes report either; an unknown id changes nothing. Called by the server
-   * entrypoint through the notifications module's run-stopped listener.
+   * runtimes report either; an unknown id changes nothing. A prompt still
+   * pending in the session's current run keeps its `input` mark: a notice for
+   * earlier work must not hide a question waiting on the user. Called by the
+   * server entrypoint through the notifications module's run-stopped listener.
    */
   markDone(sessionId: string | null): void {
     if (!sessionId) {
       return;
     }
     const row = sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
-    if (row) {
+    if (row && !runs.get(row.session_id)?.pendingPermissionRequestIds.size) {
       setAttention(row.session_id, 'done');
     }
   },

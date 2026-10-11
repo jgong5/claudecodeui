@@ -227,14 +227,13 @@ const notificationChannels = [
   }
 ];
 
-// `preferences` saves a second read when the caller already loaded them.
-function notifyUserIfEnabled({ userId, event, preferences = null }) {
+function notifyUserIfEnabled({ userId, event }) {
   if (!userId || !event) {
     return;
   }
 
   const normalizedEvent = normalizeNotificationSession(event);
-  preferences ??= notificationPreferencesDb.getPreferences(userId);
+  const preferences = notificationPreferencesDb.getPreferences(userId);
   if (!isNotificationEventEnabled(preferences, normalizedEvent)) {
     return;
   }
@@ -312,14 +311,12 @@ function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'co
  * @param {{ userId: string | number | null, provider: string, sessionId?: string | null, sessionName?: string | null }} options
  */
 function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, sessionName = null }) {
-  const preferences = userId ? notificationPreferencesDb.getPreferences(userId) : null;
   // Under `whenIdle` the held stop notice already reported this work.
-  if (preferences?.events?.stopTiming !== 'whenIdle') {
+  if (!stopNoticeWaitsForIdle(userId)) {
     runStoppedListener(sessionId);
   }
   notifyUserIfEnabled({
     userId,
-    preferences,
     event: createNotificationEvent({
       provider,
       sessionId,

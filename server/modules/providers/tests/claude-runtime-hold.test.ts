@@ -615,8 +615,9 @@ test('the Stop hook\'s scheduled prompts are listed with the held session', asyn
 test('scheduled prompts hold the process past the silence ceiling until the last is gone', async (t) => {
   const previous = process.env.BG_WAIT_CEILING_MS;
   process.env.BG_WAIT_CEILING_MS = '1';
-  // Every notification reads the user's preferences first; all disabled, so
-  // the count is the whole observation.
+  // Every notification reads the user's preferences first, and a
+  // background-completed one reads them again for its whenIdle check; all
+  // disabled, so the count is the whole observation.
   const notified = t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({ events: {}, channels: {} }) as never);
   try {
     await withRun(async ({ script }) => {
@@ -644,7 +645,7 @@ test('scheduled prompts hold the process past the silence ceiling until the last
       script.emit(result());
       await settle();
       assert.equal(script.released(), true);
-      assert.equal(notified.mock.callCount(), 2, 'the work is done');
+      assert.equal(notified.mock.callCount(), 3, 'the work is done');
     }, 1);
   } finally {
     if (previous === undefined) {
