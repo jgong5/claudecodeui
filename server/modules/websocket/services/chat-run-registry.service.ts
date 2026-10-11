@@ -117,7 +117,9 @@ function setAttention(appSessionId: string, attention: SessionAttention | null):
 /**
  * Moves the session's attention mark as a run's prompts and terminal event
  * pass through: a prompt marks it `input`, the last answered or cancelled
- * prompt clears that, and `complete` marks it `done` unless the user aborted.
+ * prompt clears that, and `complete` drops any prompt still pending, or the
+ * whole mark when the user aborted. `done` is set by `markDone`, when the
+ * run-stopped notice is decided, which may wait for background work.
  */
 function trackAttention(run: ChatRun, message: NormalizedMessage): void {
   if (message.kind === 'permission_request' && message.requestId) {
@@ -135,8 +137,11 @@ function trackAttention(run: ChatRun, message: NormalizedMessage): void {
       setAttention(run.appSessionId, null);
     }
   } else if (message.kind === 'complete') {
+    const hadPendingPrompt = run.pendingPermissionRequestIds.size > 0;
     run.pendingPermissionRequestIds.clear();
-    setAttention(run.appSessionId, message.aborted ? null : 'done');
+    if (message.aborted || hadPendingPrompt) {
+      setAttention(run.appSessionId, null);
+    }
   }
 }
 
@@ -287,6 +292,21 @@ export const chatRunRegistry = {
     // and its result is no longer the latest.
     setAttention(input.appSessionId, null);
     return run;
+  },
+
+  /**
+   * Marks a session `done`. Takes the app id or the provider-native id, since
+   * runtimes report either; an unknown id changes nothing. Called by the server
+   * entrypoint through the notifications module's run-stopped listener.
+   */
+  markDone(sessionId: string | null): void {
+    if (!sessionId) {
+      return;
+    }
+    const row = sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (row) {
+      setAttention(row.session_id, 'done');
+    }
   },
 
   getRun(appSessionId: string): ChatRun | undefined {

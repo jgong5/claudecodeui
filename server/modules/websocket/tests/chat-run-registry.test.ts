@@ -336,9 +336,10 @@ function pinUpdatedAt(sessionId: string): string | undefined {
   return sessionsDb.getSessionById(sessionId)?.updated_at;
 }
 
-test('a prompt marks the session input, answering clears it, and complete marks it done', async () => {
+test('a prompt marks the session input, answering clears it, and the stop notice marks it done', async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('app-attention-1', 'claude', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-attention-1', 'native-attention-1');
     const updatedAt = pinUpdatedAt('app-attention-1');
     const connection = new FakeConnection();
     connectedClients.add(connection as never);
@@ -356,6 +357,9 @@ test('a prompt marks the session input, answering clears it, and complete marks 
     run.writer.send({ kind: 'permission_resolved', provider: 'claude', sessionId: 'native-attention-1', requestId: 'req-1' });
     assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, null);
     run.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'native-attention-1', exitCode: 0 });
+    assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, null, 'the turn ending alone is not done');
+    // Runtimes report the stop notice under either id.
+    chatRunRegistry.markDone('native-attention-1');
     assert.equal(sessionsDb.getSessionById('app-attention-1')?.attention, 'done');
 
     const upserts = await waitForUpserts(connection, 3);
@@ -393,6 +397,8 @@ test('input holds until every prompt is settled, an abort clears the mark, and a
     assert.ok(finished);
     finished.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'n', requestId: 'req-c' });
     finished.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'n', exitCode: 0 });
+    assert.equal(readRow(), null, 'complete drops the unanswered prompt');
+    chatRunRegistry.markDone('app-attention-2');
     assert.equal(readRow(), 'done');
     // A prompt the runtime cancels after completing does not hide the result.
     finished.writer.send({ kind: 'permission_cancelled', provider: 'claude', sessionId: 'n', requestId: 'req-c' });
@@ -401,11 +407,33 @@ test('input holds until every prompt is settled, an abort clears the mark, and a
     assert.ok(startRun());
     assert.equal(readRow(), null);
 
-    // One broadcast per change: input, cleared by the abort, input, done,
-    // cleared by the new run.
-    await waitForUpserts(connection, 5);
+    // One broadcast per change: input, cleared by the abort, input, cleared
+    // by complete, done, cleared by the new run.
+    await waitForUpserts(connection, 6);
     // Long enough for a stray extra broadcast to land.
     await new Promise((resolve) => { setTimeout(resolve, 20); });
-    assert.deepEqual(readAttention(await waitForUpserts(connection, 5)), ['input', null, 'input', 'done', null]);
+    assert.deepEqual(readAttention(await waitForUpserts(connection, 6)), ['input', null, 'input', null, 'done', null]);
+  });
+});
+
+test('a failed notice decided before the run\'s complete keeps the session done', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-attention-3', 'codex', '/workspace/demo');
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-attention-3',
+      provider: 'codex',
+      providerSessionId: null,
+      connection: null,
+      userId: null,
+    });
+    assert.ok(run);
+
+    // Codex reports a failed turn before it sends the terminal complete.
+    chatRunRegistry.markDone('app-attention-3');
+    run.writer.send({ kind: 'complete', provider: 'codex', sessionId: 'n', exitCode: 1 });
+    assert.equal(sessionsDb.getSessionById('app-attention-3')?.attention, 'done');
+
+    chatRunRegistry.markDone('unknown-session');
+    chatRunRegistry.markDone(null);
   });
 });

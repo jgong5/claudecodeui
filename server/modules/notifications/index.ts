@@ -13,6 +13,8 @@ export {
   notifyBackgroundWorkCompleted,
   // Used by the Claude runtime to hold a stop notice back while the session still has work running.
   stopNoticeWaitsForIdle,
+  // Used by the server entrypoint to mark a session done when its run-stopped notice is decided.
+  setRunStoppedListener,
 } from '@/modules/notifications/services/notification-orchestrator.service.js';
 export {
   registerDesktopNotificationClient,
