@@ -21,6 +21,8 @@ import {
   queryClaudeSDK,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { setRunStoppedListener } from '@/modules/notifications/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { AnyRecord, NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
 // web-push ships no types; required, it is the same CommonJS object the
@@ -160,11 +162,16 @@ type RunContext = {
   context: ProviderRuntimeContext;
 };
 
-async function withRun(runTest: (run: RunContext) => Promise<void>, userId: number | null = null, sessionId = SESSION_ID): Promise<void> {
+async function withRun(
+  runTest: (run: RunContext) => Promise<void>,
+  userId: number | null = null,
+  sessionId = SESSION_ID,
+  runWriter: unknown = null,
+): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
   const sent: NormalizedMessage[] = [];
-  const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId };
+  const writer = runWriter ?? { send: (message: NormalizedMessage) => { sent.push(message); }, userId };
   const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
   const context: ProviderRuntimeContext = {
     resolveProviderSessionId: () => null,
@@ -798,4 +805,61 @@ test('when-idle timing sends the held stop notice when the process ends with the
       process.env.BG_WAIT_CEILING_MS = previous;
     }
   }
+});
+
+/**
+ * Runs a turn that leaves a workflow running through a chat run registry writer, with the
+ * entrypoint's run-stopped listener installed, and reads the session's mark at
+ * the turn's end and once the workflow has reported back.
+ */
+async function markAcrossWorkflow(
+  t: TestContext,
+  stopTiming: 'everyTurn' | 'whenIdle',
+  sessionId: string,
+  betweenTurns: () => void = () => {},
+): Promise<unknown[]> {
+  t.mock.method(notificationPreferencesDb, 'getPreferences', () => ({
+    channels: {},
+    events: { actionRequired: true, stop: true, error: true, stopTiming },
+  }) as never);
+  sessionsDb.createAppSession(sessionId, 'claude', '/workspace/demo');
+  setRunStoppedListener((id: string | null) => chatRunRegistry.markDone(id));
+  const run = chatRunRegistry.startRun({ appSessionId: sessionId, provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
+  assert.ok(run);
+  const readMark = () => sessionsDb.getSessionById(sessionId)?.attention ?? null;
+  const marks: unknown[] = [];
+  try {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+      script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+      script.emit(ack('toolu_wf', 'Workflow launched in background. Task ID: wf1', { status: 'async_launched', taskId: 'wf1', taskType: 'local_workflow' }));
+      script.emit(result());
+      await settle();
+      marks.push(readMark());
+      betweenTurns();
+
+      script.emit(taskNotification('wf1', 'toolu_wf', 'completed'));
+      script.emit(result());
+      await settle();
+      marks.push(readMark());
+    }, 1, sessionId, run.writer);
+  } finally {
+    setRunStoppedListener(() => {});
+    chatRunRegistry.clearAll();
+  }
+  return marks;
+}
+
+test('when-idle timing marks the session done only once the turn\'s work is done', async (t) => {
+  assert.deepEqual(await markAcrossWorkflow(t, 'whenIdle', 'app-mark-when-idle'), [null, 'done']);
+});
+
+test('every-turn timing marks the session done at the turn\'s end and again when its work is done', async (t) => {
+  const sessionId = 'app-mark-every-turn';
+  const marks = await markAcrossWorkflow(t, 'everyTurn', sessionId, () => {
+    // The user opens the session, which clears the mark.
+    sessionsDb.setSessionAttention(sessionId, null);
+  });
+  assert.deepEqual(marks, ['done', 'done']);
 });

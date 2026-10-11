@@ -124,7 +124,9 @@ async function spawnCursor(command, options = {}, ws, context) {
       let terminalNotificationSent = false;
 
       const notifyTerminalState = ({ code = null, error = null } = {}) => {
-        if (terminalNotificationSent) {
+        // A stopped run is no failure: the killed process exits non-zero, and
+        // like the other providers it sends no notice, so its mark stays clear.
+        if (terminalNotificationSent || cursorProcess.aborted) {
           return;
         }
 

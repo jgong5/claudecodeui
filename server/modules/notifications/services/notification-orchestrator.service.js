@@ -227,13 +227,14 @@ const notificationChannels = [
   }
 ];
 
-function notifyUserIfEnabled({ userId, event }) {
+// `preferences` saves a second read when the caller already loaded them.
+function notifyUserIfEnabled({ userId, event, preferences = null }) {
   if (!userId || !event) {
     return;
   }
 
   const normalizedEvent = normalizeNotificationSession(event);
-  const preferences = notificationPreferencesDb.getPreferences(userId);
+  preferences ??= notificationPreferencesDb.getPreferences(userId);
   if (!isNotificationEventEnabled(preferences, normalizedEvent)) {
     return;
   }
@@ -265,7 +266,28 @@ export function stopNoticeWaitsForIdle(userId) {
   return notificationPreferencesDb.getPreferences(userId).events?.stopTiming === 'whenIdle';
 }
 
+/**
+ * Called with the session id (app or provider-native) each time a run's stop,
+ * background-completed or failed notice is decided, before channel toggles,
+ * event toggles, dedupe or a missing user can drop the notice itself.
+ */
+let runStoppedListener = () => {};
+
+/**
+ * Used by the server entrypoint to mark a session `done` exactly when its
+ * notice would fire, so the mark waits for background work as the notice does.
+ *
+ * @param {(sessionId: string | null) => void} listener
+ */
+export function setRunStoppedListener(listener) {
+  runStoppedListener = listener;
+}
+
+/** @param {{ userId: string | number | null, provider: string, sessionId?: string | null, sessionName?: string | null, stopReason?: string }} options */
 function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null }) {
+  if (stopReason === 'completed') {
+    runStoppedListener(sessionId);
+  }
   notifyUserIfEnabled({
     userId,
     event: createNotificationEvent({
@@ -286,10 +308,18 @@ function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'co
  * Uses the `stop` kind so it rides the existing "run stopped" preference rather
  * than needing a new opt-in that would default to off. No explicit dedupeKey, so
  * the default composite key collapses repeats inside the dedupe window.
+ *
+ * @param {{ userId: string | number | null, provider: string, sessionId?: string | null, sessionName?: string | null }} options
  */
 function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, sessionName = null }) {
+  const preferences = userId ? notificationPreferencesDb.getPreferences(userId) : null;
+  // Under `whenIdle` the held stop notice already reported this work.
+  if (preferences?.events?.stopTiming !== 'whenIdle') {
+    runStoppedListener(sessionId);
+  }
   notifyUserIfEnabled({
     userId,
+    preferences,
     event: createNotificationEvent({
       provider,
       sessionId,
@@ -301,9 +331,11 @@ function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, ses
   });
 }
 
+/** @param {{ userId: string | number | null, provider: string, sessionId?: string | null, sessionName?: string | null, error: unknown }} options */
 function notifyRunFailed({ userId, provider, sessionId = null, error, sessionName = null }) {
   const errorMessage = normalizeErrorMessage(error);
 
+  runStoppedListener(sessionId);
   notifyUserIfEnabled({
     userId,
     event: createNotificationEvent({

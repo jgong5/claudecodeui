@@ -54,7 +54,7 @@ import { worktreesRoutes } from './modules/worktrees/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
-import { configureWebPush } from './modules/notifications/index.js';
+import { configureWebPush, setRunStoppedListener } from './modules/notifications/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
@@ -102,6 +102,9 @@ const agentRoutes = createAgentModule({
 // A completed run stays subscribable while its session's background work
 // (agents, workflows, backgrounded commands) is still reporting through it.
 chatRunRegistry.setRetentionGuard((sessionId) => providerRuntimeService.hasBackgroundWork(sessionId));
+// A session is marked done when its run-stopped notice is decided, which can
+// wait for that background work, rather than when the turn completes.
+setRunStoppedListener((sessionId) => chatRunRegistry.markDone(sessionId));
 
 createWebSocketServer(server, {
     verifyClient: {
