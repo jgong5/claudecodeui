@@ -437,3 +437,27 @@ test('a failed notice decided before the run\'s complete keeps the session done'
     chatRunRegistry.markDone(null);
   });
 });
+
+test('a notice that fires while a prompt is pending keeps the session input', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-attention-4', 'claude', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-attention-4', 'native-attention-4');
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-attention-4',
+      provider: 'claude',
+      providerSessionId: 'native-attention-4',
+      connection: null,
+      userId: null,
+    });
+    assert.ok(run);
+    const readRow = () => sessionsDb.getSessionById('app-attention-4')?.attention;
+
+    run.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'n', requestId: 'req-q' });
+    // Background work from an earlier turn finishes while this turn asks a question.
+    chatRunRegistry.markDone('native-attention-4');
+    assert.equal(readRow(), 'input');
+
+    run.writer.send({ kind: 'permission_resolved', provider: 'claude', sessionId: 'n', requestId: 'req-q' });
+    assert.equal(readRow(), null);
+  });
+});
