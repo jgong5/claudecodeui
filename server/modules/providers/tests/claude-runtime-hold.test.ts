@@ -64,8 +64,10 @@ after(async () => {
 });
 
 type Scripted = {
-  emit: (message: Record<string, unknown>) => void;
-  end: () => void;
+  /** Feeds the query at `queryIndex`, the latest by default. */
+  emit: (message: Record<string, unknown>, queryIndex?: number) => void;
+  /** Ends the query at `queryIndex`, every query by default. */
+  end: (queryIndex?: number) => void;
   released: () => boolean;
   stopped: string[];
   /** Every query the runtime built, in order; `emit` feeds the latest. */
@@ -93,12 +95,19 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   const queries: ScriptedQuery[] = [];
 
   const script: Scripted = {
-    emit: (message) => {
-      const index = Math.max(queries.length - 1, 0);
+    emit: (message, queryIndex) => {
+      const index = queryIndex ?? Math.max(queries.length - 1, 0);
       queues[index].push(message);
       wakes[index]();
     },
-    end: () => { queues.forEach((queue, index) => { queue.push(null); wakes[index](); }); },
+    end: (queryIndex) => {
+      queues.forEach((queue, index) => {
+        if (queryIndex === undefined || queryIndex === index) {
+          queue.push(null);
+          wakes[index]();
+        }
+      });
+    },
     released: () => queries[queries.length - 1].released,
     stopped,
     queries,
@@ -591,9 +600,9 @@ test('a second send before the process starts is queued behind the first prompt'
   });
 });
 
-/** Runs the Stop hook the runtime registered, as the CLI does just before a turn's `result`. */
-const runStopHook = (script: Scripted, crons: unknown[]) => {
-  const [stopHook] = (script.queries[0].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
+/** Runs the Stop hook the runtime registered on the query at `queryIndex`, as the CLI does just before a turn's `result`. */
+const runStopHook = (script: Scripted, crons: unknown[], queryIndex = 0) => {
+  const [stopHook] = (script.queries[queryIndex].options.hooks as { Stop: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> }).Stop[0].hooks;
   return stopHook({ hook_event_name: 'Stop', session_crons: crons });
 };
 
@@ -899,4 +908,120 @@ test('a takeover, an input release with its trigger and outstanding tasks, and r
   assert.match(releases[0], /silence ceiling/);
   assert.match(releases[0], /m1 \(Monitor\)/);
   assert.equal(removals.length, 1);
+});
+
+const cron = { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check CI' };
+
+/** Each kind of background work a send can find running, launched as the CLI streams it. */
+const backgroundKinds: Array<{ kind: string; launch: (script: Scripted) => Promise<void> }> = [
+  {
+    kind: 'background Bash',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_bash', 'Bash', { command: 'sleep 600', run_in_background: true }));
+      script.emit(taskStarted('b1', 'toolu_bash', 'local_bash'));
+    },
+  },
+  {
+    kind: 'agent',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_agent', 'Agent', { prompt: 'Survey', run_in_background: true }));
+      script.emit(taskStarted('a1', 'toolu_agent', 'local_agent'));
+    },
+  },
+  {
+    kind: 'agent resumed via SendMessage',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_send', 'SendMessage', { to: 'a1', message: 'go on' }));
+      script.emit(taskStarted('a1', 'toolu_send', 'local_agent'));
+    },
+  },
+  {
+    kind: 'workflow',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+      script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+    },
+  },
+  {
+    kind: 'Monitor',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_monitor', 'Monitor', { command: 'tail -f x', description: 'watch', timeout_ms: 1000 }));
+      script.emit(taskStarted('m1', 'toolu_monitor', 'local_bash'));
+    },
+  },
+  {
+    kind: 'CronCreate',
+    launch: async (script) => {
+      script.emit(toolUse('toolu_cron', 'CronCreate', { cron: cron.schedule, prompt: cron.prompt, recurring: true }));
+      await settle();
+      await runStopHook(script, [cron]);
+    },
+  },
+];
+
+for (const { kind, launch } of backgroundKinds) {
+  test(`${kind}: a send while it runs is pushed into the live process, path (a)`, async () => {
+    await withRun(async (run) => {
+      const { script } = run;
+      script.emit(init());
+      await launch(script);
+      script.emit(result());
+      await settle();
+
+      send(run, 'and then?', createWriter().writer);
+      await settle();
+      assert.equal(script.queries.length, 1, 'no new query');
+      const last = lastInput(script);
+      assert.equal((last.message as { content: string }).content, 'and then?');
+      assert.equal(last.priority, 'next');
+    });
+  });
+}
+
+test('path (a), #67\'s sequence: a superseded run\'s task notice and Stop hook leave the new run\'s resumed agent and cron alone', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    // Run 1's turn ends with nothing outstanding: its input closes, its stream stays open.
+    script.emit(init());
+    script.emit(result());
+    await settle();
+    assert.equal(script.queries[0].released, true);
+
+    // A send takes the session over, and run 2 resumes agent T and schedules a job.
+    send(run, 'resume the agent', createWriter().writer);
+    await settle();
+    assert.equal(script.queries.length, 2);
+    script.emit(init(), 1);
+    script.emit(toolUse('toolu_send', 'SendMessage', { to: 'T', message: 'go on' }), 1);
+    script.emit(taskStarted('T', 'toolu_send', 'local_agent'), 1);
+    await settle();
+    await runStopHook(script, [cron], 1);
+    script.emit(result(), 1);
+    await settle();
+    assert.equal(script.queries[1].released, false, 'held for T and the job');
+
+    // Run 1's process reports the same task id ending, its hook no job, and its stream ends.
+    script.emit(taskNotification('T', 'toolu_agent', 'completed'), 0);
+    await settle();
+    await runStopHook(script, [], 0);
+    script.end(0);
+    await settle();
+
+    // A send is pushed and its turn ends; its echo comes first, as the CLI's does.
+    send(run, 'how is it going?', createWriter().writer);
+    await settle();
+    script.emit(replay(lastInput(script).uuid), 1);
+    script.emit(result(), 1);
+    await settle();
+
+    // Still held for T and the job, so the next send is pushed too.
+    const tracked = listClaudeSDKBackgroundWork().find((entry) => entry.sessionId === SESSION_ID);
+    send(run, 'and now?', createWriter().writer);
+    await settle();
+    assert.deepEqual(
+      { tasks: tracked?.tasks.map((task) => task.taskId), crons: tracked?.crons, queries: script.queries.length },
+      { tasks: ['T'], crons: [cron], queries: 2 },
+    );
+    assert.equal((lastInput(script).message as { content: string }).content, 'and now?');
+  });
 });
