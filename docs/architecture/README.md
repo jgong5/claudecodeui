@@ -2,8 +2,9 @@
 
 *How a message gets from the composer to a provider CLI and back onto the screen.*
 
-Six documents covering the websocket transport, the realtime stream, conversation
-handoff, the message store and lazy loading, scrolling, and tool views.
+Documents covering the websocket transport, the realtime stream, conversation handoff,
+the message store and lazy loading, scrolling, tool views, and the Claude CLI process
+behind a session. Design decisions here follow [the project's principles](./principles.md).
 
 These subsystems are hard to read from the source alone, because in every case the
 behaviour lives in the *interaction between files* rather than in any one of them. Each
@@ -49,6 +50,7 @@ one of those two paths disagreeing with the other.
 | 4 | [The message store and lazy loading](./04-message-store-and-lazy-loading.md) | Where messages live in the client, and how a huge transcript loads without freezing the tab. |
 | 5 | [Scrolling](./05-scrolling.md) | Where the view sits, and why five different pieces of code move it. |
 | 6 | [Tool views](./06-tool-view.md) | How a tool call becomes UI. Last, because it needs the message model from 2 and 4. |
+| 7 | [Claude process lifecycle](./07-claude-process-lifecycle.md) | When a send is pushed into a session's live CLI process and when it takes the session over. Server-side only; read it after 1. |
 
 **In a hurry?** Read 1 and 2.
 **Debugging something a user can see?** Start at 5 or 6.
