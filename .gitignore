@@ -102,7 +102,8 @@ temp/
 .netlify
 
 # AI specific
-.claude/
+**/.claude/*
+!.claude/agent-team.md
 .cursor/
 .roo/
 .taskmaster/
