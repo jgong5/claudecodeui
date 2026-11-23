@@ -12,6 +12,7 @@
  * - WebSocket message streaming
  */
 
+import { spawn } from 'child_process';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
@@ -338,7 +339,9 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Object} controls - The run's handles on its live process (see queryClaudeSDK):
- *   `releaseInput`, `pushTurn`, `isInputOpen`, `markAborted`, `pendingPushes`, `chatSession`
+ *   `releaseInput`, `pushTurn`, `isInputOpen`, `markAborted`, `pendingPushes`, `chatSession`, `child`, `exited`
+ * @returns {Promise|undefined} The exit of the process this call superseded, which the new run
+ *   awaits before it spawns its own
  */
 function addSession(sessionId, queryInstance, writer = null, controls = null) {
   const existing = activeSessions.get(sessionId);
@@ -352,6 +355,7 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
   const superseding = Boolean(
     existing && existing.status === 'active' && existing.instance && existing.instance !== queryInstance
   );
+  let previousExit;
   if (superseding) {
     supersededInstances.add(existing.instance);
     Promise.resolve()
@@ -360,6 +364,10 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
       });
     existing.controls?.releaseInput('supersede');
+    // A process held for background work, or one that ignores the
+    // interrupt, would otherwise run beside the new one.
+    existing.controls?.child?.kill('SIGTERM');
+    previousExit = existing.controls?.exited;
     // Whatever the superseded process had outstanding dies with it and will
     // never report, so the new run starts from an empty task set.
     backgroundWork.clear(sessionId);
@@ -377,6 +385,7 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
   // The history reader reports a background agent as running or stopped by
   // whether this entry exists, and the cached history does not see this map.
   sessionHistoryCache.invalidate(sessionId);
+  return previousExit;
 }
 
 /**
@@ -1106,6 +1115,9 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     sentUuids: new Set(),
     // Set by a Stop that arrived before the process was spawned.
     cancelledBeforeStart: false,
+    // The CLI process, once spawned, and a promise settled when it exits.
+    child: null,
+    exited: null,
     // abort-session already sent the stopped turn's `complete`.
     markAborted: () => {
       turnCompleteSent = true;
@@ -1209,12 +1221,14 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         previousState = !previous.instance ? 'setup' : previous.controls?.isInputOpen() ? 'input open' : 'input closed';
       }
       console.log(`[Claude SDK] Takeover of session ${sessionKey()}; previous entry: ${previousState}`);
-      addSession(sessionKey(), null, ws, controls);
+      previousExit = addSession(sessionKey(), null, ws, controls);
     }
   };
   // False for a message pushed into another run's process: if its own
   // setup fails, that process, its entry and its turn are not its to end.
   let ownsProcess = false;
+  // The exit of the process a takeover superseded.
+  let previousExit;
   if (!pushing) {
     takeOver();
   }
@@ -1380,6 +1394,26 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
+
+    // The same spawn the SDK makes, kept so a run that takes this session
+    // over can SIGTERM the process and wait for its exit.
+    sdkOptions.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
+      const child = spawn(command, args, { cwd, env, signal, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      controls.child = child;
+      controls.exited = new Promise((resolve) => {
+        child.once('exit', resolve);
+        // A spawn that fails emits no `exit`.
+        child.once('error', () => {
+          if (child.pid === undefined) {
+            resolve();
+          }
+        });
+      });
+      return child;
+    };
+
+    // Never two processes for one session: a superseded one exits first.
+    await previousExit;
 
     // The SDK's own `query`, unless the caller supplies one (tests script the
     // stream to drive the hold logic below without a CLI process).
@@ -1769,21 +1803,24 @@ async function abortClaudeSDKSession(sessionId) {
  * Ends a session's live process outright — the `/exit` command. Unlike a
  * stop, background work dies with it.
  * @param {string} sessionId - Session identifier
- * @returns {boolean} False when the session has no live process
+ * @returns {boolean} False when the session has no live process, or it is already ending
  */
 function exitClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
-  if (!session) {
+  // Already ending: its entry stays until the run does.
+  if (!session || supersededInstances.has(session.instance)) {
     return false;
   }
   if (!session.instance) {
     cancelSetup(session);
     return true;
   }
-  // Its run loop winds down silently; the caller reports the end.
+  // Its run loop winds down silently; the caller reports the end. The entry
+  // stays until the run ends, so a send meanwhile takes the session over and
+  // waits for this process to exit.
   supersededInstances.add(session.instance);
+  session.controls?.releaseInput('/exit');
   session.instance.close();
-  removeSession(sessionId);
   return true;
 }
 
