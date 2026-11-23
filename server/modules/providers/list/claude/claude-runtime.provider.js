@@ -359,7 +359,7 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
       .catch((error) => {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
       });
-    existing.controls?.releaseInput();
+    existing.controls?.releaseInput('supersede');
     // Whatever the superseded process had outstanding dies with it and will
     // never report, so the new run starts from an empty task set.
     backgroundWork.clear(sessionId);
@@ -384,6 +384,7 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
  * @param {string} sessionId - Session identifier
  */
 function removeSession(sessionId) {
+  console.log(`[Claude SDK] removeSession ${sessionId}`);
   activeSessions.delete(sessionId);
   // No process, no background work: anything still tracked was killed with it.
   backgroundWork.clear(sessionId);
@@ -1042,7 +1043,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     }
     idleReleaseTimer = setTimeout(() => {
       idleReleaseTimer = null;
-      releasePromptStream();
+      releasePromptStream('silence ceiling');
     }, ceilingMs);
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
@@ -1068,7 +1069,16 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   // Exists before the setup awaits, so a message sent right behind this one
   // is pushed into it rather than refused or given a second process.
   const input = createInputStream([]);
-  releasePromptStream = input.release;
+  // Logged only when input actually closes, with what the session still had running.
+  releasePromptStream = (trigger) => {
+    if (!input.isOpen()) {
+      return;
+    }
+    input.release();
+    const tasks = backgroundWork.list().find((entry) => entry.sessionId === sessionKey())?.tasks ?? [];
+    const outstanding = tasks.map((task) => `${task.taskId} (${task.toolName ?? task.taskType})`).join(', ') || 'none';
+    console.log(`[Claude SDK] Input released for session ${sessionKey()}: ${trigger}; outstanding tasks: ${outstanding}`);
+  };
   // Messages are applied to the live process as they come; a failed control
   // call costs only that setting, never the running turn.
   // Resolves whether the CLI took the change, so only a taken one is
@@ -1078,7 +1088,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     return false;
   });
   const controls = {
-    releaseInput: () => releasePromptStream(),
+    releaseInput: (trigger) => releasePromptStream(trigger),
     isInputOpen: () => input.isOpen(),
     // Only app sessions show in the running list; a git commit-message run
     // is keyed by its provider-native id and is nobody's chat.
@@ -1187,6 +1197,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       turnWaiters.push(onTurnSettled);
     }
     if (sessionKey()) {
+      const previous = getSession(sessionKey());
+      let previousState = 'none';
+      if (previous) {
+        previousState = !previous.instance ? 'setup' : previous.controls?.isInputOpen() ? 'input open' : 'input closed';
+      }
+      console.log(`[Claude SDK] Takeover of session ${sessionKey()}; previous entry: ${previousState}`);
       addSession(sessionKey(), null, ws, controls);
     }
   };
@@ -1486,7 +1502,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         && backgroundWork.crons(sessionKey()).length === 0
       ) {
         heldForBackgroundWork = false;
-        releasePromptStream();
+        releasePromptStream('last tracked task stopped');
       }
 
       if (message.type === 'result' && controls.pendingPushes.size > 0) {
@@ -1574,7 +1590,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
           // Either nothing was backgrounded, or the background work just
           // reported in — let the CLI exit now, as it always has.
           heldForBackgroundWork = false;
-          releasePromptStream();
+          releasePromptStream('turn end with nothing to hold');
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
@@ -1666,7 +1682,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
-    releasePromptStream();
+    releasePromptStream('run end');
     settleTurn();
   }
 }
@@ -1679,7 +1695,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
  */
 function cancelSetup(session) {
   session.controls.cancelledBeforeStart = true;
-  session.controls.releaseInput();
+  session.controls.releaseInput('stop during setup');
   session.controls.markAborted();
 }
 
