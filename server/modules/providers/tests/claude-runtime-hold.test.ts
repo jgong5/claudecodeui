@@ -864,3 +864,39 @@ test('every-turn timing marks the session done at the turn\'s end and again when
   });
   assert.deepEqual(marks, ['done', 'done']);
 });
+
+test('a takeover, an input release with its trigger and outstanding tasks, and removeSession each log one line', async (t) => {
+  const previous = process.env.BG_WAIT_CEILING_MS;
+  process.env.BG_WAIT_CEILING_MS = '20';
+  const logged = t.mock.method(console, 'log', () => {});
+  try {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(toolUse('toolu_monitor', 'Monitor', { command: 'tail -f x', description: 'watch', timeout_ms: 1000 }));
+      script.emit(taskStarted('m1', 'toolu_monitor', 'local_bash'));
+      script.emit(ack('toolu_monitor', 'Monitor started', {}));
+      script.emit(result());
+      await settle();
+      await settle();
+      assert.equal(script.released(), true, 'the silence ceiling let the process go');
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BG_WAIT_CEILING_MS;
+    } else {
+      process.env.BG_WAIT_CEILING_MS = previous;
+    }
+  }
+
+  const lines = logged.mock.calls.map((call) => String(call.arguments[0]));
+  const takeovers = lines.filter((line) => line.startsWith('[Claude SDK] Takeover'));
+  const releases = lines.filter((line) => line.startsWith('[Claude SDK] Input released'));
+  const removals = lines.filter((line) => line.startsWith('[Claude SDK] removeSession'));
+  assert.equal(takeovers.length, 1);
+  assert.match(takeovers[0], /previous entry: none/);
+  // The run's end releases again; the input is already closed, so no second line.
+  assert.equal(releases.length, 1);
+  assert.match(releases[0], /silence ceiling/);
+  assert.match(releases[0], /m1 \(Monitor\)/);
+  assert.equal(removals.length, 1);
+});
