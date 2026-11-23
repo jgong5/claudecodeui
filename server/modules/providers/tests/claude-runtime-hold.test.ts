@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -72,6 +73,12 @@ type Scripted = {
   stopped: string[];
   /** Every query the runtime built, in order; `emit` feeds the latest. */
   queries: ScriptedQuery[];
+  /** Indexes of the queries that spawn a child through the runtime's `spawnClaudeCodeProcess`. */
+  spawning: Set<number>;
+  /** The children those queries spawned. */
+  children: ChildProcess[];
+  /** `query <n>` as each query is built and `exit <n>` as its child exits, in order. */
+  events: string[];
 };
 
 type ScriptedQuery = {
@@ -93,6 +100,8 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   const wakes: Array<() => void> = [() => {}];
   const stopped: string[] = [];
   const queries: ScriptedQuery[] = [];
+  const children: ChildProcess[] = [];
+  const events: string[] = [];
 
   const script: Scripted = {
     emit: (message, queryIndex) => {
@@ -111,6 +120,9 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     released: () => queries[queries.length - 1].released,
     stopped,
     queries,
+    spawning: new Set(),
+    children,
+    events,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt, options }) => {
@@ -122,6 +134,22 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     const queue = queues[index];
     const scripted: ScriptedQuery = { input: [], calls: [], released: false, failing: new Set(), options };
     queries.push(scripted);
+    events.push(`query ${index}`);
+
+    // A child that outlives its stdin, as a CLI holding background work does;
+    // the stream ends when it exits, as the SDK's does.
+    const spawnProcess = options.spawnClaudeCodeProcess as ((spawnOptions: AnyRecord) => ChildProcess) | undefined;
+    const child = script.spawning.has(index) && spawnProcess
+      ? spawnProcess({ command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: process.cwd(), env: {}, signal: new AbortController().signal })
+      : null;
+    if (child) {
+      children.push(child);
+      child.once('exit', () => {
+        events.push(`exit ${index}`);
+        queue.push(null);
+        wakes[index]();
+      });
+    }
 
     void (async () => {
       for await (const message of prompt) {
@@ -146,7 +174,14 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
 
     return Object.assign(iterator, {
       interrupt: async () => { scripted.calls.push('interrupt'); },
-      close: () => { scripted.calls.push('close'); queue.push(null); wakes[index](); },
+      // The SDK's close() leaves a spawned child alive for 2 s.
+      close: () => {
+        scripted.calls.push('close');
+        if (!child) {
+          queue.push(null);
+          wakes[index]();
+        }
+      },
       setModel: async (model?: string) => { scripted.calls.push(`setModel:${model}`); },
       setPermissionMode: async (mode: string) => {
         scripted.calls.push(`setPermissionMode:${mode}`);
@@ -197,6 +232,13 @@ async function withRun(
     script.end();
     await done;
   } finally {
+    // Also when the test throws: a run left live under the shared session id
+    // would fail the tests after it.
+    script.end();
+    // A live child would keep the test run from exiting.
+    for (const child of script.children) {
+      child.kill('SIGKILL');
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 }
@@ -208,6 +250,13 @@ function createWriter() {
 }
 
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 25); });
+
+/** Waits until `ready` holds, or about a second has passed. */
+const waitUntil = async (ready: () => boolean) => {
+  for (let waited = 0; !ready() && waited < 1000; waited += 25) {
+    await settle();
+  }
+};
 
 const init = () => ({ type: 'system', subtype: 'init', session_id: NATIVE_ID });
 const toolUse = (id: string, name: string, input: Record<string, unknown>) => ({
@@ -1093,4 +1142,42 @@ test('path (b): a run whose setup fails after a stop leaves the entry of the run
     await settle();
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test('a takeover SIGTERMs the superseded process, which ignored the interrupt, and spawns only after it exits', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    script.spawning.add(0);
+    // The turn ends with nothing outstanding: input closes while the process lives.
+    script.emit(init());
+    script.emit(result());
+    await settle();
+    assert.equal(script.queries[0].released, true);
+
+    send(run, 'take over', createWriter().writer);
+    await waitUntil(() => script.queries.length === 2);
+
+    assert.deepEqual(script.queries[0].calls, ['interrupt']);
+    assert.equal(script.children[0]?.signalCode, 'SIGTERM');
+    assert.deepEqual(script.events, ['query 0', 'exit 0', 'query 1']);
+  });
+});
+
+test('path (b): /exit, then a send, SIGTERMs the closing process and spawns only after it exits', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    script.spawning.add(0);
+    script.emit(init());
+    await backgroundKinds[0].launch(script);
+    script.emit(result());
+    await settle();
+    assert.equal(script.queries[0].released, false, 'held for the background Bash');
+
+    assert.equal(claudeRuntime.exit(SESSION_ID), true);
+    send(run, 'start again', createWriter().writer);
+    await waitUntil(() => script.queries.length === 2);
+
+    assert.equal(script.children[0]?.signalCode, 'SIGTERM');
+    assert.deepEqual(script.events, ['query 0', 'exit 0', 'query 1']);
+  });
 });
