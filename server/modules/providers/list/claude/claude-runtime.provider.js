@@ -1191,6 +1191,10 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       return { turnEnded: new Promise((resolve) => { turnWaiters.push(resolve); }) };
     }
   };
+  // Whether the session's entry is still this run's. A newer run may have
+  // taken it over; matched on controls because a run in setup has no
+  // instance yet.
+  const ownsEntry = () => getSession(sessionKey())?.controls === controls;
   // This run owns the session's process from here: any earlier one is
   // superseded (see addSession).
   const takeOver = () => {
@@ -1282,7 +1286,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       Stop: [{
         hooks: [async (input) => {
           // A superseded process's hook must not overwrite its successor's crons.
-          if (sessionKey() && getSession(sessionKey())?.controls === controls) {
+          if (ownsEntry()) {
             backgroundWork.setCrons(sessionKey(), input?.session_crons);
           }
           return {};
@@ -1381,7 +1385,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // stream to drive the hold logic below without a CLI process).
     if (controls.cancelledBeforeStart) {
       // Stopped while setting up: abort-session already reported the end.
-      if (getSession(sessionKey())?.controls === controls) {
+      if (ownsEntry()) {
         removeSession(sessionKey());
       }
       return;
@@ -1492,7 +1496,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         // The tracker is keyed by session, not by run: a superseded process
         // reporting a task it shares an id with (a resumed agent) would drop the
         // new process's task.
-        if (getSession(sessionKey())?.controls === controls) {
+        if (ownsEntry()) {
           backgroundWork.apply(sessionKey(), message);
         }
 
@@ -1616,7 +1620,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // Clean up session on completion — only while this run still owns the map
     // entry. A superseding run may have replaced it, and deleting here would
     // strand that run.
-    if (sessionKey() && getSession(sessionKey())?.controls === controls) {
+    if (ownsEntry()) {
       removeSession(sessionKey());
     }
 
@@ -1652,10 +1656,8 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     }
 
     // Clean up session on error — only while this run still owns the map entry
-    // (a superseding run may have replaced it). Matched on controls: a run
-    // that fails in setup has no instance, and neither has a run that took
-    // the session over while it set up.
-    if (sessionKey() && getSession(sessionKey())?.controls === controls) {
+    // (a superseding run may have replaced it).
+    if (ownsEntry()) {
       removeSession(sessionKey());
     }
 
