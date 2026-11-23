@@ -1025,3 +1025,72 @@ test('path (a), #67\'s sequence: a superseded run\'s task notice and Stop hook l
     assert.equal((lastInput(script).message as { content: string }).content, 'and now?');
   });
 });
+
+for (const { kind, launch } of backgroundKinds) {
+  test(`${kind}: a send after a message whose handling throws is pushed into the live process, path (b)`, async () => {
+    await withRun(async (run) => {
+      const { script, context } = run;
+      script.emit(init());
+      await launch(script);
+      script.emit(result());
+      await settle();
+
+      const { normalizeMessage } = context;
+      context.normalizeMessage = () => {
+        context.normalizeMessage = normalizeMessage;
+        throw new Error('unreadable message');
+      };
+      script.emit({ type: 'assistant', session_id: NATIVE_ID, parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'still working' }] } });
+      await settle();
+
+      send(run, 'and then?', createWriter().writer);
+      await settle();
+      assert.equal(script.queries.length, 1, 'no new query');
+      const last = lastInput(script);
+      assert.equal((last.message as { content: string }).content, 'and then?');
+      assert.equal(last.priority, 'next');
+    });
+  });
+}
+
+test('path (b): a run whose setup fails after a stop leaves the entry of the run that took the session over', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
+  const { createQuery, script } = createScriptedQuery();
+  const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
+  // The first two runs' setup waits on the test; later runs' does not.
+  const setups: Array<{ resolve: (model: undefined) => void; reject: (error: Error) => void }> = [];
+  const context: ProviderRuntimeContext = {
+    resolveProviderSessionId: () => null,
+    resolveResumeModel: () => (setups.length < 2
+      ? new Promise((resolve, reject) => { setups.push({ resolve, reject }); })
+      : Promise.resolve(undefined)),
+    getProviderModels: async () => CLAUDE_PREDEFINED_MODELS as never,
+    normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
+    isProviderInstalled: async () => true,
+    createQuery,
+  };
+  const run: RunContext = { script, sent: [], done: Promise.resolve(), cwd, context };
+  try {
+    send(run, 'one', createWriter().writer);
+    await settle();
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    send(run, 'two', createWriter().writer);
+    await settle();
+
+    setups[0].reject(new Error('setup failed'));
+    await settle();
+    send(run, 'three', createWriter().writer);
+    await settle();
+    setups[1].resolve(undefined);
+    await settle();
+
+    assert.deepEqual(
+      script.queries.map((query) => query.input.map((message) => (message.message as { content: string }).content)),
+      [['two', 'three']],
+    );
+  } finally {
+    script.end();
+    await settle();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
