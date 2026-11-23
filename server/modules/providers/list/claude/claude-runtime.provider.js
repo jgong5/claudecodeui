@@ -584,7 +584,8 @@ function extractCumulativeTokenBudget(sdkMessage) {
 // count when they are backgrounded; the rest defer or watch work by nature.
 // Workflow belongs here rather than in a branch of its own: its input schema has
 // no foreground option at all, so every call returns a task id immediately and
-// reports back in a later turn.
+// reports back in a later turn. Monitor also starts a tracked task; it stays here
+// for a stream that reports no task events.
 const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate', 'Workflow']);
 
 /**
@@ -643,7 +644,8 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed']);
  *
  * Verified against a real query (SDK 0.3.165): `task_started` carries
  * `task_id`, `tool_use_id`, `task_type` and `description` for every agent,
- * workflow and backgrounded command (a foreground Bash emits nothing);
+ * workflow and backgrounded command, and for a subagent's foreground Bash
+ * (the session's own foreground Bash emits nothing);
  * `task_notification` settles a task with any status; `task_updated` carries
  * only `task_id` and a patch, and is terminal when the patch's `status` is.
  * Housekeeping tasks the CLI starts on its own have no `tool_use_id` and are
@@ -999,7 +1001,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
   // Set when the stream reports a task starting during this turn. Task events
   // are the exact word on what is still running, so when the turn produced
   // any, the tracker decides the hold; `startsBackgroundWork` is the fallback
-  // for tools that emit none (Monitor, ScheduleWakeup, CronCreate, TaskCreate)
+  // for tools that emit none (ScheduleWakeup, CronCreate, TaskCreate)
   // and for an SDK that does not report tasks at all.
   let sawTaskEventThisTurn = false;
   // True while the process is being held open for background work, so a later
@@ -1279,7 +1281,8 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       // ScheduleWakeup emit no task events, and a fire looks like any turn.
       Stop: [{
         hooks: [async (input) => {
-          if (sessionKey()) {
+          // A superseded process's hook must not overwrite its successor's crons.
+          if (sessionKey() && getSession(sessionKey())?.controls === controls) {
             backgroundWork.setCrons(sessionKey(), input?.session_crons);
           }
           return {};
@@ -1482,7 +1485,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       if (message.type === 'system' && message.subtype === 'task_started') {
         sawTaskEventThisTurn = true;
       }
-      backgroundWork.apply(sessionKey(), message);
+      // The tracker is keyed by session, not by run: a superseded process
+      // reporting a task it shares an id with (a resumed agent) would drop the
+      // new process's task.
+      if (getSession(sessionKey())?.controls === controls) {
+        backgroundWork.apply(sessionKey(), message);
+      }
 
       // A task the user stopped gets no follow-up turn from the CLI — only its
       // `stopped` notification — so when that was the last outstanding task
@@ -1569,8 +1577,8 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         // alive for the full ceiling with nothing outstanding.
         //
         // A pushed message's turn is the user talking, not the held work
-        // reporting back, so it keeps a hold for untracked work (Monitor,
-        // ScheduleWakeup, CronCreate) — nothing else says when that is done.
+        // reporting back, so it keeps a hold for untracked work (ScheduleWakeup,
+        // CronCreate) — nothing else says when that is done.
         // Tracked tasks need no such help: the tracker knows exactly.
         const keepUntrackedHold = userTurn && heldForUntrackedWork;
         // Scheduled prompts only fire while the process lives. The turn's
