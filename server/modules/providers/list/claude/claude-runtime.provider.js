@@ -1191,6 +1191,10 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       return { turnEnded: new Promise((resolve) => { turnWaiters.push(resolve); }) };
     }
   };
+  // Whether the session's entry is still this run's. A newer run may have
+  // taken it over; matched on controls because a run in setup has no
+  // instance yet.
+  const ownsEntry = () => getSession(sessionKey())?.controls === controls;
   // This run owns the session's process from here: any earlier one is
   // superseded (see addSession).
   const takeOver = () => {
@@ -1282,7 +1286,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
       Stop: [{
         hooks: [async (input) => {
           // A superseded process's hook must not overwrite its successor's crons.
-          if (sessionKey() && getSession(sessionKey())?.controls === controls) {
+          if (ownsEntry()) {
             backgroundWork.setCrons(sessionKey(), input?.session_crons);
           }
           return {};
@@ -1381,7 +1385,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // stream to drive the hold logic below without a CLI process).
     if (controls.cancelledBeforeStart) {
       // Stopped while setting up: abort-session already reported the end.
-      if (getSession(sessionKey())?.controls === controls) {
+      if (ownsEntry()) {
         removeSession(sessionKey());
       }
       return;
@@ -1413,203 +1417,210 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
-      // Capture session ID from first message
-      if (message.session_id && !capturedSessionId) {
+      // One message that cannot be handled costs only that message: leaving
+      // the loop would end the run, and the SDK would kill the process and
+      // its background work with it.
+      try {
+        // Capture session ID from first message
+        if (message.session_id && !capturedSessionId) {
 
-        capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, controls);
+          capturedSessionId = message.session_id;
+          addSession(sessionKey(), queryInstance, ws, controls);
 
-        // Set session ID on writer
-        if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-          ws.setSessionId(capturedSessionId);
+          // Set session ID on writer
+          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
+            ws.setSessionId(capturedSessionId);
+          }
+
+          // Send session-created event only once for sessions with nothing to resume
+          if (!providerSessionId && !sessionCreatedSent) {
+            sessionCreatedSent = true;
+            ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          }
+        } else {
+          // session_id already captured
         }
 
-        // Send session-created event only once for sessions with nothing to resume
-        if (!providerSessionId && !sessionCreatedSent) {
-          sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
-        }
-      } else {
-        // session_id already captured
-      }
-
-      // The CLI took a message from stdin. The client already shows it.
-      // Its own queued `<task-notification>` is echoed too when folded into a
-      // turn; the task events already report it, and history folds that row
-      // into the task's card. (Wake-up and cron prompts run as turns of their
-      // own and are not echoed; history hides them as meta rows.)
-      if (
-        message.type === 'user'
-        && message.isReplay
-        && (
-          controls.sentUuids.delete(message.uuid)
-          || String(message.message?.content).trimStart().startsWith('<task-notification>')
-        )
-      ) {
-        controls.pendingPushes.delete(message.uuid);
-        continue;
-      }
-
-      // Transform and normalize message via adapter
-      const transformedMessage = transformMessage(message);
-      const sid = capturedSessionId || sessionId || null;
-
-      // Use adapter to normalize SDK events into NormalizedMessage[]
-      const normalized = context.normalizeMessage(transformedMessage, sid);
-      for (const msg of normalized) {
-        // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
-        if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
-          msg.parentToolUseId = transformedMessage.parentToolUseId;
-        }
-        if (isSubagentPromptEcho(msg)) {
+        // The CLI took a message from stdin. The client already shows it.
+        // Its own queued `<task-notification>` is echoed too when folded into a
+        // turn; the task events already report it, and history folds that row
+        // into the task's card. (Wake-up and cron prompts run as turns of their
+        // own and are not echoed; history hides them as meta rows.)
+        if (
+          message.type === 'user'
+          && message.isReplay
+          && (
+            controls.sentUuids.delete(message.uuid)
+            || String(message.message?.content).trimStart().startsWith('<task-notification>')
+          )
+        ) {
+          controls.pendingPushes.delete(message.uuid);
           continue;
         }
-        ws.send(msg);
-      }
 
-      // Extract and send token budget updates from assistant usage payloads,
-      // falling back to the turn's cumulative bill only for SDK builds that
-      // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
-      if (tokenBudgetData) {
-        if (message.type === 'assistant') {
-          assistantBudgetSent = true;
-        }
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-      }
+        // Transform and normalize message via adapter
+        const transformedMessage = transformMessage(message);
+        const sid = capturedSessionId || sessionId || null;
 
-      if (startsBackgroundWork(message)) {
-        backgroundWorkPending = true;
-      }
-      if (message.type === 'system' && message.subtype === 'task_started') {
-        sawTaskEventThisTurn = true;
-      }
-      // The tracker is keyed by session, not by run: a superseded process
-      // reporting a task it shares an id with (a resumed agent) would drop the
-      // new process's task.
-      if (getSession(sessionKey())?.controls === controls) {
-        backgroundWork.apply(sessionKey(), message);
-      }
-
-      // A task the user stopped gets no follow-up turn from the CLI — only its
-      // `stopped` notification — so when that was the last outstanding task
-      // nothing will ever push the `result` the release below waits for, and
-      // the process would sit until the idle ceiling. Release it here. A
-      // completed task is different: the CLI relays its result in a turn of
-      // its own, which closing stdin now would cut short. Nor while this turn
-      // has started untracked work (a CronCreate, say): only its result's
-      // Stop snapshot says whether that needs the process.
-      if (
-        heldForBackgroundWork
-        && !backgroundWorkPending
-        && message.type === 'system'
-        && message.subtype === 'task_notification'
-        && message.status === 'stopped'
-        && !backgroundWork.hasOutstanding(sessionKey())
-        && backgroundWork.crons(sessionKey()).length === 0
-      ) {
-        heldForBackgroundWork = false;
-        releasePromptStream('last tracked task stopped');
-      }
-
-      if (message.type === 'result' && controls.pendingPushes.size > 0) {
-        // A pushed message is still queued: the CLI runs it as a turn of its
-        // own next. That turn ends the exchange for the client, and stdin has
-        // to stay open for whatever it starts. The ceiling still bounds an
-        // echo that never comes (0 keeps it off).
-        scheduleRelease();
-      } else if (message.type === 'result') {
-        assistantBudgetSent = false;
-        // The turn is done as far as the client is concerned. A stopped turn's
-        // `result` consumes the abort flag: the process may live on and run
-        // more turns, which report their own `complete`.
-        const abortPending = sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
-        lastResultAborted = abortPending;
-        const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
-        if (abortPending) {
-          stopNoticeDeferred = false;
-          settleTurn();
-          notifyStopped('aborted');
-        } else if (!turnCompleteSent) {
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          settleTurn();
-          // Only tracked tasks put off the notice: untracked work is scheduled
-          // prompts (hours off, maybe) or a TaskCreate that never reports back.
-          stopNoticeDeferred = stillOutstanding && stopNoticeWaitsForIdle(ws?.userId || null);
-          if (!stopNoticeDeferred) {
-            notifyStopped('completed');
+        // Use adapter to normalize SDK events into NormalizedMessage[]
+        const normalized = context.normalizeMessage(transformedMessage, sid);
+        for (const msg of normalized) {
+          // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
+          if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
+            msg.parentToolUseId = transformedMessage.parentToolUseId;
           }
-        } else if (stopNoticeDeferred && !stillOutstanding) {
-          // The held notice stands in for "background work finished", once
-          // the last tracked task has reported back.
-          stopNoticeDeferred = false;
-          notifyStopped('completed');
-        } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn
-          // — the last of it, when nothing else is still running. A scheduled
-          // prompt's fire is such a turn too; only once none is left is the
-          // work done.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
-          });
+          if (isSubagentPromptEcho(msg)) {
+            continue;
+          }
+          ws.send(msg);
         }
-        // Work started during this turn, or work from an earlier turn that
-        // has not settled yet (a follow-up turn reports one task in while
-        // another is still going), is still running. Hold the process open
-        // so it can finish and report back in a follow-up turn; the ceiling
-        // is only a backstop for work that never reports.
-        //
-        // The release when the last task settles is this same branch on the
-        // follow-up turn the CLI pushes for it, not the settling event
-        // itself: closing stdin at that moment would cut the turn that
-        // relays the task's result.
-        //
-        // When the turn reported its tasks, the tracker is the whole truth: an
-        // Agent call without `run_in_background` is scored as background by
-        // `startsBackgroundWork`, but the CLI runs it in the foreground and
-        // it has settled before this `result` — holding for it kept a process
-        // alive for the full ceiling with nothing outstanding.
-        //
-        // A pushed message's turn is the user talking, not the held work
-        // reporting back, so it keeps a hold for untracked work (ScheduleWakeup,
-        // CronCreate) — nothing else says when that is done.
-        // Tracked tasks need no such help: the tracker knows exactly.
-        const keepUntrackedHold = userTurn && heldForUntrackedWork;
-        // Scheduled prompts only fire while the process lives. The turn's
-        // Stop hook has just reported them, so this is current.
-        const holdForSchedule = backgroundWork.crons(sessionKey()).length > 0;
-        const holdForTurn = (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding)
-          || keepUntrackedHold
-          || holdForSchedule;
-        heldForUntrackedWork = (backgroundWorkPending && !sawTaskEventThisTurn) || keepUntrackedHold;
-        userTurn = false;
-        backgroundWorkPending = false;
-        sawTaskEventThisTurn = false;
-        if (holdForTurn) {
-          heldForBackgroundWork = true;
-          scheduleRelease();
-        } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
+
+        // Extract and send token budget updates from assistant usage payloads,
+        // falling back to the turn's cumulative bill only for SDK builds that
+        // report no per-assistant usage at all.
+        const tokenBudgetData = extractTokenBudget(message)
+          || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
+        if (tokenBudgetData) {
+          if (message.type === 'assistant') {
+            assistantBudgetSent = true;
+          }
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        }
+
+        if (startsBackgroundWork(message)) {
+          backgroundWorkPending = true;
+        }
+        if (message.type === 'system' && message.subtype === 'task_started') {
+          sawTaskEventThisTurn = true;
+        }
+        // The tracker is keyed by session, not by run: a superseded process
+        // reporting a task it shares an id with (a resumed agent) would drop the
+        // new process's task.
+        if (ownsEntry()) {
+          backgroundWork.apply(sessionKey(), message);
+        }
+
+        // A task the user stopped gets no follow-up turn from the CLI — only its
+        // `stopped` notification — so when that was the last outstanding task
+        // nothing will ever push the `result` the release below waits for, and
+        // the process would sit until the idle ceiling. Release it here. A
+        // completed task is different: the CLI relays its result in a turn of
+        // its own, which closing stdin now would cut short. Nor while this turn
+        // has started untracked work (a CronCreate, say): only its result's
+        // Stop snapshot says whether that needs the process.
+        if (
+          heldForBackgroundWork
+          && !backgroundWorkPending
+          && message.type === 'system'
+          && message.subtype === 'task_notification'
+          && message.status === 'stopped'
+          && !backgroundWork.hasOutstanding(sessionKey())
+          && backgroundWork.crons(sessionKey()).length === 0
+        ) {
           heldForBackgroundWork = false;
-          releasePromptStream('turn end with nothing to hold');
+          releasePromptStream('last tracked task stopped');
         }
-      } else if (idleReleaseTimer) {
-        // Background activity after the turn — push the countdown back out.
-        scheduleRelease();
+
+        if (message.type === 'result' && controls.pendingPushes.size > 0) {
+          // A pushed message is still queued: the CLI runs it as a turn of its
+          // own next. That turn ends the exchange for the client, and stdin has
+          // to stay open for whatever it starts. The ceiling still bounds an
+          // echo that never comes (0 keeps it off).
+          scheduleRelease();
+        } else if (message.type === 'result') {
+          assistantBudgetSent = false;
+          // The turn is done as far as the client is concerned. A stopped turn's
+          // `result` consumes the abort flag: the process may live on and run
+          // more turns, which report their own `complete`.
+          const abortPending = sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
+          lastResultAborted = abortPending;
+          const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
+          if (abortPending) {
+            stopNoticeDeferred = false;
+            settleTurn();
+            notifyStopped('aborted');
+          } else if (!turnCompleteSent) {
+            turnCompleteSent = true;
+            ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+            settleTurn();
+            // Only tracked tasks put off the notice: untracked work is scheduled
+            // prompts (hours off, maybe) or a TaskCreate that never reports back.
+            stopNoticeDeferred = stillOutstanding && stopNoticeWaitsForIdle(ws?.userId || null);
+            if (!stopNoticeDeferred) {
+              notifyStopped('completed');
+            }
+          } else if (stopNoticeDeferred && !stillOutstanding) {
+            // The held notice stands in for "background work finished", once
+            // the last tracked task has reported back.
+            stopNoticeDeferred = false;
+            notifyStopped('completed');
+          } else if (heldForBackgroundWork && !stillOutstanding && backgroundWork.crons(sessionKey()).length === 0) {
+            // A result after the turn already reported complete means the work we
+            // held the process open for has finished and pushed a follow-up turn
+            // — the last of it, when nothing else is still running. A scheduled
+            // prompt's fire is such a turn too; only once none is left is the
+            // work done.
+            notifyBackgroundWorkCompleted({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary
+            });
+          }
+          // Work started during this turn, or work from an earlier turn that
+          // has not settled yet (a follow-up turn reports one task in while
+          // another is still going), is still running. Hold the process open
+          // so it can finish and report back in a follow-up turn; the ceiling
+          // is only a backstop for work that never reports.
+          //
+          // The release when the last task settles is this same branch on the
+          // follow-up turn the CLI pushes for it, not the settling event
+          // itself: closing stdin at that moment would cut the turn that
+          // relays the task's result.
+          //
+          // When the turn reported its tasks, the tracker is the whole truth: an
+          // Agent call without `run_in_background` is scored as background by
+          // `startsBackgroundWork`, but the CLI runs it in the foreground and
+          // it has settled before this `result` — holding for it kept a process
+          // alive for the full ceiling with nothing outstanding.
+          //
+          // A pushed message's turn is the user talking, not the held work
+          // reporting back, so it keeps a hold for untracked work (ScheduleWakeup,
+          // CronCreate) — nothing else says when that is done.
+          // Tracked tasks need no such help: the tracker knows exactly.
+          const keepUntrackedHold = userTurn && heldForUntrackedWork;
+          // Scheduled prompts only fire while the process lives. The turn's
+          // Stop hook has just reported them, so this is current.
+          const holdForSchedule = backgroundWork.crons(sessionKey()).length > 0;
+          const holdForTurn = (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding)
+            || keepUntrackedHold
+            || holdForSchedule;
+          heldForUntrackedWork = (backgroundWorkPending && !sawTaskEventThisTurn) || keepUntrackedHold;
+          userTurn = false;
+          backgroundWorkPending = false;
+          sawTaskEventThisTurn = false;
+          if (holdForTurn) {
+            heldForBackgroundWork = true;
+            scheduleRelease();
+          } else {
+            // Either nothing was backgrounded, or the background work just
+            // reported in — let the CLI exit now, as it always has.
+            heldForBackgroundWork = false;
+            releasePromptStream('turn end with nothing to hold');
+          }
+        } else if (idleReleaseTimer) {
+          // Background activity after the turn — push the countdown back out.
+          scheduleRelease();
+        }
+      } catch (error) {
+        console.error(`[Claude SDK] Skipped a message (${message?.type}) for session ${sessionKey()}:`, error?.message || error);
       }
     }
 
     // Clean up session on completion — only while this run still owns the map
     // entry. A superseding run may have replaced it, and deleting here would
     // strand that run.
-    if (sessionKey() && getSession(sessionKey())?.instance === queryInstance) {
+    if (ownsEntry()) {
       removeSession(sessionKey());
     }
 
@@ -1646,7 +1657,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
 
     // Clean up session on error — only while this run still owns the map entry
     // (a superseding run may have replaced it).
-    if (sessionKey() && getSession(sessionKey())?.instance === queryInstance) {
+    if (ownsEntry()) {
       removeSession(sessionKey());
     }
 
