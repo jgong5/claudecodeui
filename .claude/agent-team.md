@@ -11,6 +11,6 @@ frontend code under `src/` follows `.agents/skills/frontend-module-standards/SKI
 
 Run the gate from a tree outside the OS temp directory: the read-only-roots and
 file-tree tests treat anything under `os.tmpdir()` as inside a read-only root, so a
-tree under `/tmp` fails three of them.
+tree under `/tmp` fails them.
 
 Never deploy or restart the `cloudcli` service: it runs the sessions agents work in.
