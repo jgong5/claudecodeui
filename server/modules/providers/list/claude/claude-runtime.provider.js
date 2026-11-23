@@ -339,9 +339,10 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Object} controls - The run's handles on its live process (see queryClaudeSDK):
- *   `releaseInput`, `pushTurn`, `isInputOpen`, `markAborted`, `pendingPushes`, `chatSession`, `child`, `exited`
- * @returns {Promise|undefined} The exit of the process this call superseded, which the new run
- *   awaits before it spawns its own
+ *   `releaseInput`, `pushTurn`, `isInputOpen`, `markAborted`, `pendingPushes`, `chatSession`, `child`, `exited`,
+ *   `previousExit`
+ * @returns {Promise|undefined} The exit of the process this call superseded, or of the one the run
+ *   it took over from was waiting for, which the new run awaits before it spawns its own
  */
 function addSession(sessionId, queryInstance, writer = null, controls = null) {
   const existing = activeSessions.get(sessionId);
@@ -371,6 +372,10 @@ function addSession(sessionId, queryInstance, writer = null, controls = null) {
     // Whatever the superseded process had outstanding dies with it and will
     // never report, so the new run starts from an empty task set.
     backgroundWork.clear(sessionId);
+  } else if (existing && !existing.instance && existing.controls !== controls) {
+    // A run still in setup, taken over once stopped, may still be waiting
+    // for an earlier process to exit; the new run waits for it too.
+    previousExit = existing.controls?.previousExit;
   }
   const carried = superseding ? null : existing;
   activeSessions.set(sessionId, {
@@ -1118,6 +1123,9 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     // The CLI process, once spawned, and a promise settled when it exits.
     child: null,
     exited: null,
+    // The exit of the process a takeover superseded, awaited before this run
+    // spawns its own.
+    previousExit: null,
     // abort-session already sent the stopped turn's `complete`.
     markAborted: () => {
       turnCompleteSent = true;
@@ -1221,14 +1229,12 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
         previousState = !previous.instance ? 'setup' : previous.controls?.isInputOpen() ? 'input open' : 'input closed';
       }
       console.log(`[Claude SDK] Takeover of session ${sessionKey()}; previous entry: ${previousState}`);
-      previousExit = addSession(sessionKey(), null, ws, controls);
+      controls.previousExit = addSession(sessionKey(), null, ws, controls);
     }
   };
   // False for a message pushed into another run's process: if its own
   // setup fails, that process, its entry and its turn are not its to end.
   let ownsProcess = false;
-  // The exit of the process a takeover superseded.
-  let previousExit;
   if (!pushing) {
     takeOver();
   }
@@ -1413,7 +1419,7 @@ async function queryClaudeSDK(command, options = {}, ws, context, onTurnSettled 
     };
 
     // Never two processes for one session: a superseded one exits first.
-    await previousExit;
+    await controls.previousExit;
 
     // The SDK's own `query`, unless the caller supplies one (tests script the
     // stream to drive the hold logic below without a CLI process).

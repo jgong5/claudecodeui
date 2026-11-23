@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -77,6 +78,8 @@ type Scripted = {
   spawning: Set<number>;
   /** The children those queries spawned. */
   children: ChildProcess[];
+  /** How long a spawned child takes to exit on SIGTERM, once it has written to stdout; 0 lets the signal kill it at once. */
+  exitDelayMs: number;
   /** `query <n>` as each query is built and `exit <n>` as its child exits, in order. */
   events: string[];
 };
@@ -122,6 +125,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     queries,
     spawning: new Set(),
     children,
+    exitDelayMs: 0,
     events,
   };
 
@@ -139,8 +143,11 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     // A child that outlives its stdin, as a CLI holding background work does;
     // the stream ends when it exits, as the SDK's does.
     const spawnProcess = options.spawnClaudeCodeProcess as ((spawnOptions: AnyRecord) => ChildProcess) | undefined;
+    const slowExit = script.exitDelayMs > 0
+      ? `process.on('SIGTERM', () => setTimeout(() => process.exit(), ${script.exitDelayMs})); process.stdout.write('ready');`
+      : '';
     const child = script.spawning.has(index) && spawnProcess
-      ? spawnProcess({ command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: process.cwd(), env: {}, signal: new AbortController().signal })
+      ? spawnProcess({ command: process.execPath, args: ['-e', `${slowExit} setInterval(() => {}, 1000)`], cwd: process.cwd(), env: {}, signal: new AbortController().signal })
       : null;
     if (child) {
       children.push(child);
@@ -1159,6 +1166,28 @@ test('a takeover SIGTERMs the superseded process, which ignored the interrupt, a
 
     assert.deepEqual(script.queries[0].calls, ['interrupt']);
     assert.equal(script.children[0]?.signalCode, 'SIGTERM');
+    assert.deepEqual(script.events, ['query 0', 'exit 0', 'query 1']);
+  });
+});
+
+test('a send after a stopped takeover spawns only after the process that takeover superseded exits', async () => {
+  await withRun(async (run) => {
+    const { script } = run;
+    script.spawning.add(0);
+    script.exitDelayMs = 300;
+    script.emit(init());
+    script.emit(result());
+    await waitUntil(() => script.children.length === 1);
+    await once(script.children[0].stdout!, 'data');
+    assert.equal(script.queries[0].released, true);
+
+    // The takeover SIGTERMs process 0 and waits for its exit, still in setup.
+    send(run, 'take over', createWriter().writer);
+    await settle();
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    send(run, 'third', createWriter().writer);
+    await waitUntil(() => script.events.includes('exit 0') && script.queries.length === 2);
+
     assert.deepEqual(script.events, ['query 0', 'exit 0', 'query 1']);
   });
 });
