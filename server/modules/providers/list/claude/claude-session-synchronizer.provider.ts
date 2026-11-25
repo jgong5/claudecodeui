@@ -162,11 +162,15 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    // A transcript a session was edited off stays on disk but is nobody's
-    // conversation any more. Indexing it would list the version the user
-    // edited away from, and for a session discovered from disk, whose app id
-    // is that transcript's id, hand the row back to it.
+    // A transcript a session left behind stays on disk: the version an edit
+    // discarded, or the earlier part of a conversation whose context was
+    // cleared. Re-indexing it would list it as a session of its own — and for
+    // a session discovered from disk, whose app id is that transcript's id, it
+    // would hand the row back to the transcript the user moved off.
     if (sessionsDb.isProviderSessionSuperseded(parsed.sessionId, this.provider)) {
+      // Left before this file was ever indexed: its path is not on record
+      // yet, and the history reader (and deletion) needs it.
+      sessionsDb.recordSupersededTranscriptPath(parsed.sessionId, this.provider, filePath);
       return null;
     }
 

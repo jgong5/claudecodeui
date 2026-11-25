@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import type { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
@@ -11,6 +11,7 @@ import {
   SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL,
   SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
+  SESSION_PINS_TABLE_SCHEMA_SQL,
   USER_PREFERENCES_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
   VAPID_KEYS_TABLE_SCHEMA_SQL,
@@ -425,6 +426,17 @@ const addSupersededTranscriptPathColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'superseded_provider_sessions', columnNames, 'jsonl_path', 'TEXT');
 };
 
+/**
+ * Adds the reason a session left a provider session behind.
+ *
+ * Every row written before clearing context existed came from an edit, which
+ * is what the column defaults to.
+ */
+const addSupersededReasonColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'superseded_provider_sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'superseded_provider_sessions', columnNames, 'reason', "TEXT NOT NULL DEFAULT 'edit'");
+};
+
 const addForkedFromSessionIdColumn = (db: Database): void => {
   const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'forked_from_session_id', 'TEXT');
@@ -489,6 +501,19 @@ const addSessionAttentionColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'attention', 'TEXT');
 };
 
+/**
+ * Adds the reasoning-effort metadata columns to the custom-model library.
+ *
+ * Existing rows stay NULL on purpose: no effort levels were ever declared for
+ * them, and a guessed list could offer levels the model rejects. Those models
+ * keep hiding the composer's Reasoning section until the user declares levels.
+ */
+const addProviderModelEffortColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'provider_models').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'effort_values', 'TEXT DEFAULT NULL');
+  addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'effort_default', 'TEXT DEFAULT NULL');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -536,10 +561,12 @@ export const runMigrations = (db: Database) => {
       CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
       ON provider_models(provider, sort_order, id)
     `);
+    addProviderModelEffortColumns(db);
     db.exec(USER_PREFERENCES_TABLE_SCHEMA_SQL);
     db.exec(SESSION_DRAFTS_TABLE_SCHEMA_SQL);
     db.exec(SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL);
     addSupersededTranscriptPathColumn(db);
+    addSupersededReasonColumn(db);
 
     db.exec(PROJECTS_TABLE_SCHEMA_SQL);
     rebuildProjectsTableWithPrimaryKeySchema(db);
@@ -554,6 +581,8 @@ export const runMigrations = (db: Database) => {
     addSessionNameSourceColumns(db);
     addSessionEntrypointColumn(db);
     addSessionAttentionColumn(db);
+    // Create after legacy session-table repairs so the foreign key names the canonical app id.
+    db.exec(SESSION_PINS_TABLE_SCHEMA_SQL);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

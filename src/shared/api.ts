@@ -32,6 +32,12 @@ export const authenticatedFetch = (
 
   return fetch(url, {
     ...options,
+    // Every response here can carry X-Refreshed-Token or X-Auth-Error, and a
+    // served-from-cache response replays the headers it was stored with. Those
+    // headers describe one moment in one session, so they must never be reused:
+    // a stale X-Refreshed-Token overwrote the current token with an expired one
+    // on every start, which then got discarded as expired.
+    cache: 'no-store',
     headers: {
       ...defaultHeaders,
       ...options.headers,
@@ -41,7 +47,11 @@ export const authenticatedFetch = (
     if (refreshedToken) {
       storeAuthToken(refreshedToken);
     }
-    if (response.headers.get('X-Auth-Error')) {
+    // Belt and braces for any path that still reaches a cached response: only a
+    // real rejection ends the session. Note that a revalidated response surfaces
+    // its stored status (typically 200), not the 304 from the wire, so the
+    // header alone says nothing about the current request.
+    if (response.status === 401 && response.headers.get('X-Auth-Error')) {
       expireAuthSession();
     }
     return response;
@@ -111,6 +121,37 @@ export async function readApiJson<T>(response: Response): Promise<T> {
   }
   return data as T;
 }
+
+/**
+ * Picks the server's human-readable message out of a failed response body, or
+ * null when it carries none. Accepts the legacy string envelope
+ * (`error: 'message'`), the structured AppError envelope
+ * (`error: { code, message, details }`) and a top-level `message`.
+ *
+ * The non-throwing counterpart of readApiJson, used by the auth and onboarding
+ * screens because they show their own localized message when the server gives
+ * none, by the plugins context for failed plugin list, install, update,
+ * uninstall and toggle calls, which all answer with the structured envelope,
+ * and by the chat drafts store to say why the server refused a queued message.
+ */
+export function readApiErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+
+  const { error, message } = body as { error?: unknown; message?: unknown };
+  const candidates = [
+    error && typeof error === 'object' ? (error as { message?: unknown }).message : error,
+    message,
+  ];
+  // The body is unchecked JSON: anything but a non-blank string is skipped, as
+  // an object rendered as a React child throws and unmounts the screen.
+  const readable = candidates.find(
+    (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '',
+  );
+  return readable ?? null;
+}
+
 const get = (url: string, options: ApiRequestOptions = {}) => authenticatedFetch(url, options);
 
 const withBody =
@@ -236,6 +277,9 @@ export const api = {
   sessionDetails: (sessionId: string) =>
     get(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
   runningSessions: () => get('/api/providers/sessions/running'),
+  pinnedSessions: (options: ApiRequestOptions = {}) => get('/api/providers/sessions/pinned', options),
+  setSessionPinned: (sessionId: string, isPinned: boolean, options: ApiRequestOptions = {}) =>
+    put(`/api/providers/sessions/${encodeURIComponent(sessionId)}/pin`, { isPinned }, options),
   recentConversations: ({ limit = 40, offset = 0 }: { limit?: number; offset?: number } = {}) =>
     get(`/api/providers/sessions/recent${query({ limit, offset })}`),
   providerSessionId: (sessionId: string) =>
@@ -249,6 +293,10 @@ export const api = {
   // The server announces the change as `session_upserted`.
   clearSessionAttention: (sessionId: string) =>
     del(`/api/providers/sessions/${encodeURIComponent(sessionId)}/attention`),
+  // Starts the session's next message on a fresh context. Its history stays
+  // visible; `cleared` is false when there was no context to clear.
+  clearSessionContext: (sessionId: string) =>
+    post(`/api/providers/sessions/${encodeURIComponent(sessionId)}/clear-context`),
   renameSession: (sessionId: string, summary: string) =>
     put(`/api/providers/sessions/${sessionId}`, { summary }),
   // What one agent of a workflow run did, read from its transcript on demand
@@ -382,6 +430,11 @@ export const api = {
     capabilities: () => get('/api/providers/capabilities'),
     authStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
+    cliStatus: (provider: string) =>
+      get(`/api/providers/${encodeURIComponent(provider)}/cli`),
+    updateCli: (provider: string) =>
+      post(`/api/providers/${encodeURIComponent(provider)}/cli/update`),
+    claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
 
     models: (provider: string) => get(`/api/providers/${provider}/models`),
     createModel: (provider: string, input: unknown) =>
@@ -390,6 +443,12 @@ export const api = {
       patch(`/api/providers/${provider}/models/${recordId}`, input),
     deleteModel: (provider: string, recordId: string | number) =>
       del(`/api/providers/${provider}/models/${recordId}`),
+    setCustomModelsOnly: (provider: string, enabled: boolean) =>
+      put(`/api/providers/${provider}/models/custom-only`, { enabled }),
+    dismissSideQuestion: (sessionId: string, sideQuestionId: string) =>
+      del(
+        `/api/providers/sessions/${encodeURIComponent(sessionId)}/side-questions/${encodeURIComponent(sideQuestionId)}`,
+      ),
 
     createSession: (payload: {
       provider: string;
@@ -446,10 +505,10 @@ export const api = {
 
   // Chat attachments, stored globally under ~/.cloudcli/assets
   assets: {
-    uploadFiles: (formData: FormData) =>
+    uploadFiles: (formData: FormData, requestId?: string) =>
       authenticatedFetch('/api/assets/files', {
         method: 'POST',
-        headers: {}, // Let browser set Content-Type for FormData
+        headers: requestId ? { 'X-Upload-Request-ID': requestId } : {},
         body: formData,
       }),
     file: (storedName: string) => get(`/api/assets/files/${encodeURIComponent(storedName)}`),
@@ -489,9 +548,15 @@ export const api = {
     savePreferences: (updates: Record<string, unknown>) =>
       patch('/api/user/preferences', updates),
     drafts: () => get('/api/user/drafts'),
+    // Without `queuedMessage` only the text is written; the stored queued
+    // message is left as it is.
     saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown }) =>
       put('/api/user/drafts', { scope, ...draft }),
-    deleteDraft: (scope: string) => del('/api/user/drafts', { scope }),
+    // Appends to the scope's queued message on the server and returns the
+    // message that is now queued.
+    appendQueuedMessage: (scope: string, queuedMessage: unknown) =>
+      post('/api/user/drafts/queued-message', { scope, queuedMessage }),
+    clearQueuedMessage: (scope: string) => del('/api/user/drafts/queued-message', { scope }),
   },
 
   // Server-side settings: API keys, stored credentials, notifications, web push
@@ -522,6 +587,18 @@ export const api = {
       subscribe: (subscription: { endpoint?: string; keys?: unknown }) =>
         post('/api/settings/push/subscribe', subscription),
       unsubscribe: (endpoint: string) => post('/api/settings/push/unsubscribe', { endpoint }),
+    },
+
+    // Outbound webhook for run lifecycle events. `createSecret` is the only
+    // response that ever carries the signing secret.
+    notificationWebhook: {
+      get: () => get('/api/notifications/webhook'),
+      save: (config: { url: string; allowHttp: boolean; enabled: boolean }) =>
+        put('/api/notifications/webhook', config),
+      remove: () => del('/api/notifications/webhook'),
+      createSecret: () => post('/api/notifications/webhook/secret'),
+      removeSecret: () => del('/api/notifications/webhook/secret'),
+      sendTest: () => post('/api/notifications/webhook/test'),
     },
   },
 
@@ -554,6 +631,7 @@ export const api = {
     sessions: () => get('/api/browser-use/sessions'),
     stopSession: (sessionId: string) => post(`/api/browser-use/sessions/${sessionId}/stop`),
     deleteSession: (sessionId: string) => del(`/api/browser-use/sessions/${sessionId}`),
+    sendInput: (sessionId: string, input: unknown) => post(`/api/browser-use/sessions/${sessionId}/input`, input),
     installRuntime: () => post('/api/browser-use/runtime/install'),
   },
 

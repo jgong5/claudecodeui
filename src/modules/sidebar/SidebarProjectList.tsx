@@ -5,6 +5,7 @@ import SidebarProjectsState from '@/modules/sidebar/SidebarProjectsState';
 
 /** Rendered by SidebarContent to list the filtered projects, delegating each row to SidebarProjectItem. */
 export default function SidebarProjectList({
+  includeOffPagePins = true,
   projects,
   filteredProjects,
   selectedProject,
@@ -35,6 +36,7 @@ export default function SidebarProjectList({
   onSaveProjectName,
   onDeleteProject,
   onSessionSelect,
+  onArchiveSession,
   onDeleteSession,
   onForkSession,
   onNewSession,
@@ -95,6 +97,7 @@ export default function SidebarProjectList({
                 isStarred={isProjectStarred(project.projectId)}
                 isEditing={renamingProject !== null}
                 renameDraft={renamingProject?.draft ?? ''}
+                includeOffPagePins={includeOffPagePins}
                 sessions={getProjectSessions(project)}
                 initialSessionsLoaded={initialSessionsLoaded.has(project.projectId)}
                 isLoadingMoreSessions={loadingMoreProjects.has(project.projectId)}
@@ -112,6 +115,7 @@ export default function SidebarProjectList({
                 onSaveProjectName={onSaveProjectName}
                 onDeleteProject={onDeleteProject}
                 onSessionSelect={onSessionSelect}
+                onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onForkSession={onForkSession}
                 onLoadMoreSessions={onLoadMoreSessions}
