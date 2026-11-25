@@ -24,6 +24,7 @@ import { prepareTranscriptMessages, truncateNestedOutput } from '@/shared/messag
 import {
   createNormalizedMessage,
   generateMessageId,
+  isClaudeNonTurnMessageRow,
   isPlaceholderProviderModel,
   readObjectRecord,
   sliceTailPage,
@@ -33,7 +34,10 @@ import {
 import { sessionsDb } from '@/modules/database/index.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { listExternalClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
-import { summarizeClaudeTokenUsage } from '@/modules/providers/services/provider-token-usage.service.js';
+import {
+  getReportedClaudeContextWindow,
+  summarizeClaudeTokenUsage,
+} from '@/modules/providers/services/provider-token-usage.service.js';
 
 const PROVIDER = 'claude';
 
@@ -122,6 +126,9 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
 
       try {
         const entry = JSON.parse(line) as AnyRecord;
+        if (isClaudeNonTurnMessageRow(entry)) {
+          continue;
+        }
         const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
         if (timestamp && !transcript.startedAt) {
           transcript.startedAt = timestamp;
@@ -476,7 +483,13 @@ function replaceLaunchToolResultContent(message: AnyRecord, replacement: string)
  * so a conversation is a path through it rather than the whole file. Editing a
  * sent message makes a second path appear alongside the first.
  */
-async function readTranscriptRows(jsonlPath: string, providerSessionId: string): Promise<AnyRecord[]> {
+async function readTranscriptRows(
+  jsonlPath: string,
+  providerSessionId: string,
+  // The parent chain runs through non-turn rows too: a walk along it reads them
+  // all, or it stops short at the first one.
+  { keepNonTurnRows = false }: { keepNonTurnRows?: boolean } = {},
+): Promise<AnyRecord[]> {
   const rows: AnyRecord[] = [];
   const fileStream = fs.createReadStream(jsonlPath);
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -487,7 +500,7 @@ async function readTranscriptRows(jsonlPath: string, providerSessionId: string):
     }
     try {
       const entry = JSON.parse(line) as AnyRecord;
-      if (entry.sessionId === providerSessionId) {
+      if (entry.sessionId === providerSessionId && (keepNonTurnRows || !isClaudeNonTurnMessageRow(entry))) {
         rows.push(entry);
       }
     } catch {
@@ -729,11 +742,14 @@ async function getSessionMessages(
   limit: number | null,
   offset: number,
   getLiveRunStartTime: LiveRunStartTimeProbe,
+  transcriptPath?: string,
 ): Promise<ClaudeHistoryMessagesResult> {
   try {
     // The DB row is keyed by the app-facing session id, while the JSONL rows
-    // on disk carry the provider-native id — both ids are needed here.
-    const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+    // on disk carry the provider-native id — both ids are needed here. An
+    // explicit path is an earlier part of the conversation (its context was
+    // cleared since), which the row no longer points at.
+    const jsonLPath = transcriptPath ?? sessionsDb.getSessionById(sessionId)?.jsonl_path;
 
     if (!jsonLPath) {
       return { messages: [], total: 0, hasMore: false };
@@ -997,6 +1013,30 @@ const INTERNAL_CONTENT_PREFIXES = [
   '[Request interrupted',
   'Base directory for this skill:',
 ] as const;
+
+/**
+ * Claude Code 2.1.282+ writes pasted text into the transcript already wrapped as
+ * `<pasted_content id="ID">\nBODY\n</pasted_content id="ID">`. The closing tag
+ * carries the id too, so a generic closing-tag stripper misses it.
+ */
+const PASTED_CONTENT =
+  /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content(?: id="\1")?>/g;
+
+/**
+ * Replaces each well-formed `<pasted_content>` wrapper with its body so a user
+ * message shows the text that was pasted. Unclosed or mismatched-id wrappers are
+ * left untouched, and a message with no wrapper is returned unchanged.
+ */
+function unwrapPastedContent(text: string): string {
+  let unwrapped = false;
+  const result = text.replace(PASTED_CONTENT, (_match, _id: string, body: string) => {
+    unwrapped = true;
+    return body;
+  });
+
+  if (!unwrapped) return text;
+  return result.replace(/^[\r\n]+|[\r\n]+$/g, '');
+}
 
 function isInternalContent(content: string): boolean {
   return INTERNAL_CONTENT_PREFIXES.some((prefix) => content.startsWith(prefix));
@@ -1320,10 +1360,18 @@ export class ClaudeSessionsProvider implements IProviderSessions {
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const messages = this.normalizeMessageRows(rawMessage, sessionId);
+    // Show the text that was pasted, not the wrapper tags Claude Code stores it in.
+    for (const message of messages) {
+      if (message.role === 'user' && message.kind === 'text' && typeof message.content === 'string') {
+        message.content = unwrapPastedContent(message.content);
+      }
+    }
     // A synthesized id is useless as an anchor — it changes on every read — so
     // a row without its own uuid produces messages with no anchor at all.
     const raw = readObjectRecord(rawMessage);
-    const anchorId = typeof raw?.uuid === 'string' && raw.uuid ? raw.uuid : null;
+    // An attachment row (a message steered into a running turn) is part of the
+    // turn it joined, not a turn of its own, so it is no place to edit from.
+    const anchorId = raw?.type !== 'attachment' && typeof raw?.uuid === 'string' && raw.uuid ? raw.uuid : null;
     if (anchorId) {
       for (const message of messages) {
         if (message.role === 'user') {
@@ -1351,6 +1399,26 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    // A message steered into a running turn that Claude read at a tool-call
+    // boundary is stored as a `queued_command` attachment of that turn rather
+    // than as a user row. It reads as the user's message, at the point Claude
+    // read it — under the id it was sent with (`source_uuid`), which is the id
+    // the live echo carried, so the two reconcile into one bubble.
+    // `commandMode` other than `prompt` (task notifications and the like) is
+    // the CLI talking to itself, not the user.
+    if (raw.type === 'attachment') {
+      const attachment = readObjectRecord(raw.attachment);
+      const commandMode = attachment?.commandMode ?? 'prompt';
+      if (attachment?.type === 'queued_command' && commandMode === 'prompt' && attachment.prompt) {
+        return this.normalizeMessageRows({
+          type: 'user',
+          uuid: typeof attachment.source_uuid === 'string' && attachment.source_uuid ? attachment.source_uuid : baseId,
+          timestamp: ts,
+          message: { role: 'user', content: attachment.prompt },
+        }, sessionId);
+      }
+    }
 
     // The live stream reports on background work — a launched workflow, agent
     // or shell command — through four `system` subtypes that the transcript
@@ -1747,7 +1815,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return { found: false, resumeThroughId: null };
     }
 
-    const rows = await readTranscriptRows(jsonlPath, providerSessionId);
+    const rows = await readTranscriptRows(jsonlPath, providerSessionId, { keepNonTurnRows: true });
     const byUuid = new Map<string, AnyRecord>();
     for (const row of rows) {
       if (typeof row.uuid === 'string') {
@@ -1853,7 +1921,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     try {
       // Load full history first so `total` reflects frontend-normalized messages,
       // not raw JSONL records.
-      result = await getSessionMessages(sessionId, providerSessionId, null, 0, this.getLiveRunStartTime);
+      result = await getSessionMessages(
+        sessionId,
+        providerSessionId,
+        null,
+        0,
+        this.getLiveRunStartTime,
+        options.transcriptPath,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[ClaudeProvider] Failed to load session ${sessionId}:`, message);
@@ -1924,7 +1999,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // Carried on every page, like the Codex and OpenCode readers do, so the
       // composer's counter tracks the conversation instead of being frozen at
       // whatever it was when the session was opened.
-      tokenUsage: summarizeClaudeTokenUsage(rawMessages),
+      tokenUsage: summarizeClaudeTokenUsage(
+        rawMessages,
+        undefined,
+        getReportedClaudeContextWindow(providerSessionId),
+      ),
     };
   }
 }

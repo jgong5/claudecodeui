@@ -6,11 +6,11 @@ import test from 'node:test';
 
 import { setRunStoppedListener } from '@/modules/notifications/index.js';
 import { abortCursorSession, spawnCursor } from '@/modules/providers/list/cursor/cursor-runtime.provider.js';
-import { abortOpenCodeSession, spawnOpenCode } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
 
+// OpenCode runs through its SDK server now, not a CLI a stand-in binary can
+// replace; its abort reports `aborted`, which never sets the done mark.
 const runtimes = [
   { binary: 'cursor-agent', spawn: spawnCursor, abort: abortCursorSession },
-  { binary: 'opencode', spawn: spawnOpenCode, abort: abortOpenCodeSession },
 ];
 
 for (const { binary, spawn, abort } of runtimes) {

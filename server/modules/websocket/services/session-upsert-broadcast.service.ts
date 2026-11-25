@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
-import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { broadcastToConnectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 import type { SessionUpsertedEvent } from '@/shared/types.js';
 
 /**
@@ -52,6 +52,8 @@ async function buildSessionUpsertedEvent(
       origin: row.origin ?? 'app',
       entrypoint: row.entrypoint ?? null,
       attention: row.attention ?? null,
+      forkedFromSessionId: row.forked_from_session_id ?? null,
+      forkAncestors: row.forked_from_session_id ? sessionsDb.getForkAncestors(row.session_id) : [],
     },
     project: project
       ? {
@@ -64,20 +66,6 @@ async function buildSessionUpsertedEvent(
       : null,
     timestamp: new Date().toISOString(),
   };
-}
-
-function sendToConnectedClients(payloads: string[]): void {
-  if (payloads.length === 0) {
-    return;
-  }
-
-  connectedClients.forEach((client) => {
-    if (client.readyState === WS_OPEN_STATE) {
-      for (const payload of payloads) {
-        client.send(payload);
-      }
-    }
-  });
 }
 
 /**
@@ -98,7 +86,7 @@ function sendInCallOrder(payloads: Promise<string[]>): Promise<void> {
   // handled now so Node does not exit; the caller still gets the rejection
   // through `sent`.
   payloads.catch(() => undefined);
-  const sent = sendQueue.then(() => payloads).then(sendToConnectedClients);
+  const sent = sendQueue.then(() => payloads).then(broadcastToConnectedClients);
   sendQueue = sent.catch(() => undefined);
   return sent;
 }

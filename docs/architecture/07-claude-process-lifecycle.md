@@ -2,7 +2,7 @@
 
 *How the Claude runtime keeps one CLI process per session, when a send is pushed into it
 and when it takes the session over. Everything here lives in
-`server/modules/providers/list/claude/claude-runtime.provider.js` unless a path says
+`server/modules/providers/list/claude/claude-runtime.provider.ts` unless a path says
 otherwise; the tests are in `server/modules/providers/tests/claude-runtime-hold.test.ts`.
 The requirement is [#69](https://github.com/jgong5/claudecodeui/issues/69); the evidence
 is [#67](https://github.com/jgong5/claudecodeui/issues/67).*
@@ -15,6 +15,12 @@ stays open after a turn's `result` while background work is outstanding, so the 
 running. A later send asks `controls.isInputOpen()`. When open, `pushTurn` writes the message
 into the live process. When closed, the send takes the session over (`takeOver`). That
 starts a new process, after the old one has exited.
+
+A `chat.steer` (upstream's steering, merged in the v1.37.10 sync) goes the same way:
+`controls.steer` pushes the message into the live input with `priority: 'next'`, keeps it in
+`pendingPushes` like any pushed send, and shows its echo when the CLI reads it. Upstream's
+"stop the held process's tasks before a new turn" (#1395) is not taken: a send to a held
+process is pushed, and a takeover SIGTERMs the old process (decision 2).
 
 ## Why a send fails to push
 
@@ -368,7 +374,7 @@ the static rule.
 
 **Changes per file.**
 
-- `claude-runtime.provider.js`
+- `claude-runtime.provider.ts` (was `.js` when this was written)
   - `queryClaudeSDK` gets the spawn hook, the per-message `try`, the release trigger
     argument and log, and `takeOver`'s wait and log.
   - Removal at the loop end and in the catch is matched on `controls`, and so are the

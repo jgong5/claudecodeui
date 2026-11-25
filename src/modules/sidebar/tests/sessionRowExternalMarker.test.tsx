@@ -41,6 +41,7 @@ const renderRow = (session: Record<string, unknown>) => render(
     onSaveEditingSession: noop,
     onProjectSelect: noop,
     onSessionSelect: noop,
+    onArchiveSession: noop,
     onDeleteSession: noop,
     isSelecting: false,
     isChecked: false,

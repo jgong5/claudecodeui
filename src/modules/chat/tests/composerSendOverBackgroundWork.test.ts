@@ -81,7 +81,12 @@ const confirm = vi.fn<(message?: string) => boolean>();
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).includes('/api/user/drafts/queued-message') && init?.method === 'POST') {
+      // Nothing else is queued: the server queues the message on its own.
+      const { queuedMessage } = JSON.parse(String(init.body)) as { queuedMessage: unknown };
+      return json({ success: true, queuedMessage, appended: false });
+    }
     if (String(url).includes('/api/commands/list')) {
       return json({ builtIn: [{ name: '/exit', description: 'End the process', namespace: 'builtin', metadata: { type: 'builtin' } }], custom: [] });
     }

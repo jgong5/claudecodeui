@@ -4,7 +4,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
-import type { RealtimeClientConnection, SessionAttention, SessionOrigin } from '@/shared/types.js';
+import type { RealtimeClientConnection, SessionAttention, SessionForkAncestor, SessionOrigin } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 type SessionSummary = {
@@ -16,6 +16,8 @@ type SessionSummary = {
   origin: SessionOrigin;
   entrypoint: string | null;
   attention: SessionAttention | null;
+  forkedFromSessionId: string | null;
+  forkAncestors: SessionForkAncestor[];
 };
 
 type SessionRepositoryRow = {
@@ -27,6 +29,7 @@ type SessionRepositoryRow = {
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  forked_from_session_id?: string | null;
 };
 
 export type ProjectListItem = {
@@ -136,6 +139,8 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     origin: row.origin ?? 'app',
     entrypoint: row.entrypoint ?? null,
     attention: row.attention ?? null,
+    forkedFromSessionId: row.forked_from_session_id ?? null,
+    forkAncestors: row.forked_from_session_id ? sessionsDb.getForkAncestors(row.session_id) : [],
   };
 }
 
