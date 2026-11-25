@@ -9,6 +9,9 @@ import { getProjectsWithSessions } from '@/modules/projects/index.js';
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { broadcastSessionUpserted, connectedClients } from '@/modules/websocket/index.js';
 
+// These tests fake the home folder; an inherited CLAUDE_CONFIG_DIR would send Claude's data folder elsewhere.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 /**
  * Indexes two Claude transcripts, one started in a terminal and one started
  * by this app, and checks what the sidebar is told about each: the project

@@ -6,7 +6,12 @@ import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
 import { resolveCodexCommandLine } from '@/modules/providers/index.js';
-import { parseIncomingJsonObject, stripAnsiSequences } from '@/shared/utils.js';
+import {
+  parseIncomingJsonObject,
+  resolveClaudeDataDirectory,
+  resolveClaudeGlobalConfigPath,
+  stripAnsiSequences,
+} from '@/shared/utils.js';
 
 type ShellIncomingMessage = {
   type?: string;
@@ -361,8 +366,7 @@ function readClaudeThemeFile(filePath: string, maxBytes: number): string | null 
  * they outrank `--settings`, so no flag could change their theme anyway.
  */
 function resolveClaudeTheme(projectPath: string): string {
-  const configDirOverride = process.env.CLAUDE_CONFIG_DIR;
-  const configHome = configDirOverride || path.join(os.homedir(), '.claude');
+  const configHome = resolveClaudeDataDirectory();
   const legacyGlobalConfigPath = path.join(configHome, '.config.json');
   const configFiles: Array<[string, number]> = [
     [path.join(projectPath, '.claude', 'settings.local.json'), MAX_CLAUDE_SETTINGS_FILE_BYTES],
@@ -371,7 +375,7 @@ function resolveClaudeTheme(projectPath: string): string {
     [
       fs.existsSync(legacyGlobalConfigPath)
         ? legacyGlobalConfigPath
-        : path.join(configDirOverride || os.homedir(), '.claude.json'),
+        : resolveClaudeGlobalConfigPath(),
       MAX_CLAUDE_GLOBAL_CONFIG_FILE_BYTES,
     ],
   ];

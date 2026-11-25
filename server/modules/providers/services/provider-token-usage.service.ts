@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
-import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { AppError, getOpenCodeDatabasePath, resolveClaudeDataDirectory } from '@/shared/utils.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -20,6 +20,7 @@ type FileTail = {
 type ProviderTokenUsageServiceDependencies = {
   getSessionById: (sessionId: string) => SessionRow | null | undefined;
   getHomeDirectory: () => string;
+  getClaudeDataDirectory: () => string;
   getOpenCodeDatabasePath: () => string;
   fileExists: (filePath: string) => boolean;
   readDirectory: (directoryPath: string) => Promise<Dirent[]>;
@@ -67,6 +68,7 @@ const TOKEN_USAGE_TAIL_BYTES = 4 * 1024 * 1024;
 const defaultDependencies: ProviderTokenUsageServiceDependencies = {
   getSessionById: (sessionId) => sessionsDb.getSessionById(sessionId),
   getHomeDirectory: () => os.homedir(),
+  getClaudeDataDirectory: resolveClaudeDataDirectory,
   getOpenCodeDatabasePath,
   fileExists: (filePath) => fsSync.existsSync(filePath),
   readDirectory: (directoryPath) => fsp.readdir(directoryPath, { withFileTypes: true }),
@@ -508,8 +510,7 @@ export function createProviderTokenUsageService(
 
         const encodedProjectPath = session.project_path.replace(/[^a-zA-Z0-9-]/g, '-');
         const projectDirectory = path.join(
-          dependencies.getHomeDirectory(),
-          '.claude',
+          dependencies.getClaudeDataDirectory(),
           'projects',
           encodedProjectPath,
         );

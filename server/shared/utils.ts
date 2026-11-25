@@ -265,7 +265,7 @@ export const FORBIDDEN_WORKSPACE_PATHS = [
 const READ_ONLY_ROOTS = [...new Set([
   '/tmp',
   os.tmpdir(),
-  path.join(os.homedir(), '.claude', 'projects'),
+  path.join(resolveClaudeDataDirectory(), 'projects'),
 ])];
 
 /**
@@ -1130,6 +1130,47 @@ export function unwrapJsonStringLiteral(value: string): string {
   } catch {
     return value;
   }
+}
+
+// ---------------------------
+//----------------- CLAUDE CLI DATA DIRECTORY UTILITIES ------------
+/**
+ * The folder the Claude CLI keeps its per-user data in: `projects/` (session
+ * transcripts), `sessions/` (one registry file per running CLI process) and
+ * `history.jsonl`. That is `$CLAUDE_CONFIG_DIR` when it is an absolute path,
+ * else `~/.claude`. A relative value resolves against each CLI's own working
+ * folder, so there is no single folder to follow and the default is kept.
+ *
+ * The same folder holds `settings.json`, `.credentials.json`, `skills/`,
+ * `plugins/` and `commands/`.
+ *
+ * Used by the session synchronizer and watcher, CLI liveness, the file
+ * viewer's read-only roots, Claude auth, skills and settings permissions, the
+ * shell theme lookup, slash commands, TaskMaster, token usage and `cloudcli
+ * status`. All of them must look where a CLI spawned by this server, or one in
+ * the user's terminal, reads and writes.
+ */
+export function resolveClaudeDataDirectory(): string {
+  return readClaudeConfigDirOverride() ?? path.join(os.homedir(), '.claude');
+}
+
+/**
+ * The Claude CLI's global config file, which holds the user-scope MCP servers
+ * (`mcpServers`) and the local-scope ones (`projects[<path>].mcpServers`):
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when that is an absolute path, else
+ * `~/.claude.json` (in the home folder itself, not in `~/.claude/`).
+ *
+ * Used by the Claude MCP provider, the Claude runtime's MCP loading, the shell
+ * theme lookup and TaskMaster's MCP detection.
+ */
+export function resolveClaudeGlobalConfigPath(): string {
+  return path.join(readClaudeConfigDirOverride() ?? os.homedir(), '.claude.json');
+}
+
+/** `CLAUDE_CONFIG_DIR` when it is an absolute path, else null. */
+function readClaudeConfigDirOverride(): string | null {
+  const configDirectory = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return configDirectory && path.isAbsolute(configDirectory) ? configDirectory : null;
 }
 
 // ---------------------------

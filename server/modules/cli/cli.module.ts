@@ -6,7 +6,7 @@ import path from 'node:path';
 import spawn from 'cross-spawn';
 
 import type { CliApplication, CliPackageMetadata } from '@/shared/types.js';
-import { findApplicationRoot, getModuleDirectory } from '@/shared/utils.js';
+import { findApplicationRoot, getModuleDirectory, resolveClaudeDataDirectory } from '@/shared/utils.js';
 
 import { createCliService } from './cli.service.js';
 import { createSandboxCommandService } from './sandbox.service.js';
@@ -63,7 +63,7 @@ export function createCliApplication(): CliApplication {
   return createCliService({
     applicationRoot,
     defaultDatabasePath: path.join(homeDirectory, '.cloudcli', 'auth.db'),
-    homeDirectory,
+    claudeDataDirectory: resolveClaudeDataDirectory(),
     packageMetadata,
     environment: process.env,
     fileSystem,

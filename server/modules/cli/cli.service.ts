@@ -13,7 +13,8 @@ import { terminalTextStyles } from '@/shared/utils.js';
 type CliServiceDependencies = {
   applicationRoot: string;
   defaultDatabasePath: string;
-  homeDirectory: string;
+  /** Claude's user data folder (`$CLAUDE_CONFIG_DIR` or `~/.claude`), shown by `status`. */
+  claudeDataDirectory: string;
   packageMetadata: CliPackageMetadata;
   environment: CliEnvironment;
   fileSystem: CliFileSystem;
@@ -81,7 +82,7 @@ function showStatus(dependencies: CliServiceDependencies): void {
   const { environment, fileSystem, output } = dependencies;
   const databasePath = environment.DATABASE_PATH || dependencies.defaultDatabasePath;
   const databaseExists = fileSystem.pathExists(databasePath);
-  const claudeProjectsPath = path.join(dependencies.homeDirectory, '.claude', 'projects');
+  const claudeProjectsPath = path.join(dependencies.claudeDataDirectory, 'projects');
   const environmentFilePath = path.join(dependencies.applicationRoot, '.env');
 
   output.log(`\n${terminalTextStyles.bright('CloudCLI UI - Status')}\n`);

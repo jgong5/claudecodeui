@@ -1,5 +1,4 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
@@ -15,9 +14,10 @@ import {
   readOptionalString,
   readProviderSkillMarkdownDefinition,
   readProviderSkillMarkdownDefinitionFromContent,
+  resolveClaudeDataDirectory,
 } from '@/shared/utils.js';
 
-const getClaudeHomePath = (): string => path.join(os.homedir(), '.claude');
+const getClaudeHomePath = resolveClaudeDataDirectory;
 
 const getClaudePluginName = (pluginId: string): string | null => {
   const normalizedPluginId = pluginId.trim();

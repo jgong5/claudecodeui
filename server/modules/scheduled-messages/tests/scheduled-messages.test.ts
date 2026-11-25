@@ -15,6 +15,9 @@ import {
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry, connectedClients } from '@/modules/websocket/index.js';
 
+// These tests fake the home folder; an inherited CLAUDE_CONFIG_DIR would send Claude's data folder elsewhere.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 const SESSION_ID = 'scheduled-session';
 
 async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<void>): Promise<void> {

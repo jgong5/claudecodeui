@@ -10,6 +10,9 @@ import { handleChatConnection, runDetachedChatTurn } from '@/modules/websocket/s
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 
+// These tests fake the home folder; an inherited CLAUDE_CONFIG_DIR would send Claude's data folder elsewhere.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 const SESSION_ID = 'held-session';
 const NATIVE_ID = 'claude-native-held';
 

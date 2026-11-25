@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
@@ -10,6 +9,7 @@ import {
   findFilesRecursivelyModifiedAfter,
   normalizeSessionName,
   readFileTimestamps,
+  resolveClaudeDataDirectory,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 
@@ -37,7 +37,7 @@ type TranscriptTitles = {
  */
 export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'claude' as const;
-  private readonly claudeHome = path.join(os.homedir(), '.claude');
+  private readonly claudeHome = resolveClaudeDataDirectory();
 
   /**
    * Returns true when a JSONL file is a subagent transcript or tool result
