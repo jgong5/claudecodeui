@@ -10,6 +10,9 @@ import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-s
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { buildLookupMap, extractFirstValidJsonlData } from '@/shared/utils.js';
 
+// These tests fake the home folder; an inherited CLAUDE_CONFIG_DIR would send Claude's data folder elsewhere.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-provider-db-'));

@@ -63,7 +63,7 @@ export function createCliApplication() {
   const service = createCliService({
     applicationRoot: ${JSON.stringify(fixtureRoot)},
     defaultDatabasePath: ${JSON.stringify(fixtureDatabasePath)},
-    homeDirectory: ${JSON.stringify(fixtureRoot)},
+    claudeDataDirectory: ${JSON.stringify(fixtureRoot)},
     packageMetadata: { version: '1.0.0' },
     environment: process.env,
     fileSystem: {

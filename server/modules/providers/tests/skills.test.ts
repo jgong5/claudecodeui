@@ -6,6 +6,9 @@ import test from 'node:test';
 
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 
+// These tests fake the home folder; an inherited CLAUDE_CONFIG_DIR would send Claude's data folder elsewhere.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 const patchHomeDir = (nextHomeDir: string) => {
   const original = os.homedir;
   (os as any).homedir = () => nextHomeDir;

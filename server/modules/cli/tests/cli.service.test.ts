@@ -18,7 +18,7 @@ function createHarness() {
   const service = createCliService({
     applicationRoot: '/application',
     defaultDatabasePath: '/home/user/.cloudcli/auth.db',
-    homeDirectory: '/home/user',
+    claudeDataDirectory: '/home/user/.claude',
     packageMetadata: {
       version: '1.2.3',
       homepage: 'https://cloudcli.example',

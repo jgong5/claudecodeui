@@ -11,6 +11,7 @@ import { closeConnection, initializeDatabase, scanStateDb, sessionsDb } from '@/
 const fixtureHome = await mkdtemp(path.join(os.tmpdir(), 'claude-unclassified-home-'));
 process.env.HOME = fixtureHome;
 process.env.USERPROFILE = fixtureHome;
+delete process.env.CLAUDE_CONFIG_DIR;
 process.env.DATABASE_PATH = path.join(fixtureHome, 'auth.db');
 
 const { closeSessionsWatcher, initializeSessionsWatcher } = await import(
